@@ -290,7 +290,7 @@ _raid_bdev_destruct(void *ctxt)
 		 * layers.  Also close the descriptors if we have started shutdown.
 		 */
 		if (g_shutdown_started || base_info->remove_scheduled == true) {
-			SPDK_NOTICELOG(bdev_raid, "Debug ============> 1\n");
+			SPDK_NOTICELOG("Debug ============> 1\n");
 			raid_bdev_free_base_bdev_resource(base_info);
 		}
 	}
@@ -1697,7 +1697,7 @@ raid_bdev_remove_base_bdev_on_suspended(struct raid_bdev *raid_bdev, void *ctx)
 
 	pthread_mutex_lock(&raid_bdev->mutex);
 	base_info->remove_scheduled = false;
-	SPDK_NOTICELOG(bdev_raid, "Debug ============> 2\n");
+	SPDK_NOTICELOG("Debug ============> 2\n");
 	raid_bdev_free_base_bdev_resource(base_info);
 	pthread_mutex_unlock(&raid_bdev->mutex);
 
@@ -1746,7 +1746,7 @@ raid_bdev_remove_base_bdev(struct spdk_bdev *base_bdev)
 		 * As raid bdev is not registered yet or already unregistered,
 		 * so cleanup should be done here itself.
 		 */
-		SPDK_NOTICELOG(bdev_raid, "Debug ============> 3\n");
+		SPDK_NOTICELOG("Debug ============> 3\n");
 		raid_bdev_free_base_bdev_resource(base_info);
 		if (raid_bdev->num_base_bdevs_discovered == 0) {
 			/* There is no base bdev for this raid, so free the raid device. */
@@ -1866,7 +1866,7 @@ raid_bdev_delete(struct raid_bdev *raid_bdev, raid_bdev_destruct_cb cb_fn, void 
 			 * As raid bdev is not registered yet or already unregistered,
 			 * so cleanup should be done here itself.
 			 */
-			SPDK_NOTICELOG(bdev_raid, "Debug ============> 4\n");
+			SPDK_NOTICELOG("Debug ============> 4\n");
 			raid_bdev_free_base_bdev_resource(base_info);
 		}
 	}
@@ -1913,7 +1913,7 @@ raid_bdev_configure_base_bdev_load_sb_cb(const struct raid_bdev_superblock *sb, 
 	case 0:
 		/* valid superblock found */
 		SPDK_ERRLOG("Existing raid superblock found on bdev %s\n", base_info->name);
-		SPDK_NOTICELOG(bdev_raid, "Debug ============> 5\n");
+		SPDK_NOTICELOG("Debug ============> 5\n");
 		raid_bdev_free_base_bdev_resource(base_info);
 		break;
 	case -EINVAL:
@@ -2052,7 +2052,7 @@ raid_bdev_configure_base_bdev(struct raid_base_bdev_info *base_info)
 	}
 out:
 	if (rc != 0) {
-		SPDK_NOTICELOG(bdev_raid, "Debug ============> 6\n");
+		SPDK_NOTICELOG("Debug ============> 6\n");
 		raid_bdev_free_base_bdev_resource(base_info);
 	}
 	return rc;
