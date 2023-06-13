@@ -1820,7 +1820,7 @@ spdk_nvme_ctrlr_reset(struct spdk_nvme_ctrlr *ctrlr)
 	}
 
 	
-	NVME_CTRLR_INFOLOG(ctrlr, "====> spdk_nvme_ctrlr_process_admin_completions\n");
+	NVME_CTRLR_NOTICELOG(ctrlr, "====> spdk_nvme_ctrlr_process_admin_completions\\n");
 
 	while (1) {
 		rc = spdk_nvme_ctrlr_process_admin_completions(ctrlr);
@@ -1829,18 +1829,18 @@ spdk_nvme_ctrlr_reset(struct spdk_nvme_ctrlr *ctrlr)
 		}
 	}
 
-	NVME_CTRLR_INFOLOG(ctrlr, "====> spdk_nvme_ctrlr_reconnect_async\n");
+	NVME_CTRLR_NOTICELOG(ctrlr, "====> spdk_nvme_ctrlr_reconnect_async\n");
 	spdk_nvme_ctrlr_reconnect_async(ctrlr);
 
-	NVME_CTRLR_INFOLOG(ctrlr, "====> spdk_nvme_ctrlr_reconnect_poll_async\n");
+	NVME_CTRLR_NOTICELOG(ctrlr, "====> spdk_nvme_ctrlr_reconnect_poll_async\n");
 	while (true) {
-		NVME_CTRLR_INFOLOG(ctrlr, "====> spdk_nvme_ctrlr_reconnect_poll_async\n");
+		NVME_CTRLR_NOTICELOG(ctrlr, "====> spdk_nvme_ctrlr_reconnect_poll_async\n");
 		rc = spdk_nvme_ctrlr_reconnect_poll_async(ctrlr);
 		if (rc != -EAGAIN) {
 			break;
 		}
 	}
-	NVME_CTRLR_INFOLOG(ctrlr, "====> end\n");
+	NVME_CTRLR_NOTICELOG(ctrlr, "====> end\n");
 
 	return rc;
 }
