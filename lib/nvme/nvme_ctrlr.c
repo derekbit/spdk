@@ -1834,6 +1834,7 @@ spdk_nvme_ctrlr_reset(struct spdk_nvme_ctrlr *ctrlr)
 
 	NVME_CTRLR_INFOLOG(ctrlr, "====> spdk_nvme_ctrlr_reconnect_poll_async\n");
 	while (true) {
+		NVME_CTRLR_INFOLOG(ctrlr, "====> spdk_nvme_ctrlr_reconnect_poll_async\n");
 		rc = spdk_nvme_ctrlr_reconnect_poll_async(ctrlr);
 		if (rc != -EAGAIN) {
 			break;
