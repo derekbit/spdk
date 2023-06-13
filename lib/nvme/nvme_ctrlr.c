@@ -1819,6 +1819,9 @@ spdk_nvme_ctrlr_reset(struct spdk_nvme_ctrlr *ctrlr)
 		return rc;
 	}
 
+	
+	NVME_CTRLR_INFOLOG(ctrlr, "====> spdk_nvme_ctrlr_process_admin_completions\n");
+
 	while (1) {
 		rc = spdk_nvme_ctrlr_process_admin_completions(ctrlr);
 		if (rc == -ENXIO) {
@@ -1826,14 +1829,17 @@ spdk_nvme_ctrlr_reset(struct spdk_nvme_ctrlr *ctrlr)
 		}
 	}
 
+	NVME_CTRLR_INFOLOG(ctrlr, "====> spdk_nvme_ctrlr_reconnect_async\n");
 	spdk_nvme_ctrlr_reconnect_async(ctrlr);
 
+	NVME_CTRLR_INFOLOG(ctrlr, "====> spdk_nvme_ctrlr_reconnect_poll_async\n");
 	while (true) {
 		rc = spdk_nvme_ctrlr_reconnect_poll_async(ctrlr);
 		if (rc != -EAGAIN) {
 			break;
 		}
 	}
+	NVME_CTRLR_INFOLOG(ctrlr, "====> end\n");
 
 	return rc;
 }
