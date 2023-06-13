@@ -1626,12 +1626,15 @@ nvme_ctrlr_disconnect(struct spdk_nvme_ctrlr *ctrlr)
 	/* Disable keep-alive, it'll be re-enabled as part of the init process */
 	ctrlr->keep_alive_interval_ticks = 0;
 
+	NVME_CTRLR_NOTICELOG(ctrlr, "nvme_ctrlr_abort_queued_aborts\n");
 	/* Abort all of the queued abort requests */
 	nvme_ctrlr_abort_queued_aborts(ctrlr);
 
+	NVME_CTRLR_NOTICELOG(ctrlr, "nvme_transport_admin_qpair_abort_aers\n");
 	nvme_transport_admin_qpair_abort_aers(ctrlr->adminq);
 
 	ctrlr->adminq->transport_failure_reason = SPDK_NVME_QPAIR_FAILURE_LOCAL;
+	NVME_CTRLR_NOTICELOG(ctrlr, "nvme_transport_ctrlr_disconnect_qpair\n");
 	nvme_transport_ctrlr_disconnect_qpair(ctrlr, ctrlr->adminq);
 
 	return 0;
