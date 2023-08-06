@@ -2079,6 +2079,16 @@ Format: 'user:u1 secret:s1 muser:mu1 msecret:ms1,user:u2 secret:s2 muser:mu2 mse
     p.add_argument('-l', '--lvs-name', help='lvol store name', required=False)
     p.set_defaults(func=bdev_lvol_unload_lvstore)
 
+    def bdev_lvol_load_lvstore(args):
+        rpc.lvol.bdev_lvol_load_lvstore(args.client,
+                                          uuid=args.uuid,
+                                          lvs_name=args.lvs_name)
+
+    p = subparsers.add_parser('bdev_lvol_load_lvstore', help='Load an logical volume store')
+    p.add_argument('-u', '--uuid', help='lvol store UUID', required=False)
+    p.add_argument('-l', '--lvs-name', help='lvol store name', required=False)
+    p.set_defaults(func=bdev_lvol_load_lvstore)
+
     def bdev_lvol_get_lvstores(args):
         print_dict(rpc.lvol.bdev_lvol_get_lvstores(args.client,
                                                    uuid=args.uuid,

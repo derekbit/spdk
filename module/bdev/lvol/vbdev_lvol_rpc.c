@@ -329,6 +329,70 @@ cleanup:
 }
 SPDK_RPC_REGISTER("bdev_lvol_unload_lvstore", rpc_bdev_lvol_unload_lvstore, SPDK_RPC_RUNTIME)
 
+struct rpc_bdev_lvol_load_lvstore {
+	char *uuid;
+	char *lvs_name;
+};
+
+static void
+free_rpc_bdev_lvol_load_lvstore(struct rpc_bdev_lvol_load_lvstore *req)
+{
+	free(req->uuid);
+	free(req->lvs_name);
+}
+
+static const struct spdk_json_object_decoder rpc_bdev_lvol_load_lvstore_decoders[] = {
+	{"uuid", offsetof(struct rpc_bdev_lvol_load_lvstore, uuid), spdk_json_decode_string, true},
+	{"lvs_name", offsetof(struct rpc_bdev_lvol_load_lvstore, lvs_name), spdk_json_decode_string, true},
+};
+
+static void
+rpc_lvol_store_load_cb(void *cb_arg, int lvserrno)
+{
+	struct spdk_jsonrpc_request *request = cb_arg;
+
+	if (lvserrno != 0) {
+		goto invalid;
+	}
+
+	spdk_jsonrpc_send_bool_response(request, true);
+	return;
+
+invalid:
+	spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
+					 spdk_strerror(-lvserrno));
+}
+
+static void
+rpc_bdev_lvol_load_lvstore(struct spdk_jsonrpc_request *request,
+			     const struct spdk_json_val *params)
+{
+	struct rpc_bdev_lvol_load_lvstore req = {};
+	struct spdk_lvol_store *lvs = NULL;
+	int rc;
+
+	if (spdk_json_decode_object(params, rpc_bdev_lvol_load_lvstore_decoders,
+				    SPDK_COUNTOF(rpc_bdev_lvol_load_lvstore_decoders),
+				    &req)) {
+		SPDK_INFOLOG(lvol_rpc, "spdk_json_decode_object failed\n");
+		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
+						 "spdk_json_decode_object failed");
+		goto cleanup;
+	}
+
+	rc = vbdev_get_lvol_store_by_uuid_xor_name(req.uuid, req.lvs_name, &lvs);
+	if (rc != 0) {
+		spdk_jsonrpc_send_error_response(request, rc, spdk_strerror(-rc));
+		goto cleanup;
+	}
+
+	vbdev_lvs_load(lvs, rpc_lvol_store_load_cb, request);
+
+cleanup:
+	free_rpc_bdev_lvol_load_lvstore(&req);
+}
+SPDK_RPC_REGISTER("bdev_lvol_load_lvstore", rpc_bdev_lvol_load_lvstore, SPDK_RPC_RUNTIME)
+
 struct rpc_bdev_lvol_create {
 	char *uuid;
 	char *lvs_name;

@@ -1711,7 +1711,7 @@ vbdev_lvs_examine_done(void *arg, int lvserrno)
 	free(req);
 }
 
-static void
+void
 vbdev_lvs_load(struct spdk_bs_dev *bs_dev, spdk_lvs_op_with_handle_complete cb_fn, void *cb_arg)
 {
 	struct spdk_lvs_opts lvs_opts;
