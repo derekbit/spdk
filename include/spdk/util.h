@@ -308,6 +308,25 @@ spdk_memset_s(void *data, size_t data_size, int ch, size_t count)
 #endif
 }
 
+/**
+ * Get the UTC time string in RFC3339 format.
+ * 
+ * \param buf Buffer to store the UTC time string.
+ * \param buf_size Size of the buffer.
+ * 
+ * \return void
+ */
+static inline void
+spdk_current_utc_time_rfc3339(char *buf, size_t buf_size) {
+	struct tm *utc;
+	time_t rawtime;
+
+	time(&rawtime);
+	utc = gmtime(&rawtime);
+
+	strftime(buf, buf_size, "%Y-%m-%dT%H:%M:%SZ", utc);
+}
+
 #ifdef __cplusplus
 }
 #endif
