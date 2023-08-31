@@ -9984,8 +9984,9 @@ int
 spdk_bdev_get_fragmap(char *bdev_name, uint64_t offset, uint64_t size,
 		      spdk_bdev_get_fragmap_cb cb_fn, void *cb_arg)
 {
-	char *lvs_name, *lvol_name;
-	struct spdk_bdev *bdev;
+	char *lvs_name = NULL;
+	char *lvol_name = NULL;
+	struct spdk_bdev *bdev = NLL;
 	struct spdk_lvol *lvol = NULL;
 	struct spdk_uuid uuid;
 
