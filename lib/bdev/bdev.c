@@ -9997,7 +9997,7 @@ spdk_bdev_get_fragmap(const char *bdev_name, uint64_t offset, uint64_t size,
 
 	bdev = spdk_bdev_get_by_name(bdev_name);
 	if (bdev == NULL) {
-		SPDK_ERRLOG("bdev '%s' does not exist\n", req.lvol_name);
+		SPDK_ERRLOG("bdev '%s' does not exist\n", bdev_name);
 		spdk_jsonrpc_send_error_response(request, -ENODEV, spdk_strerror(ENODEV));
 		return -ENODEV;
 	}
