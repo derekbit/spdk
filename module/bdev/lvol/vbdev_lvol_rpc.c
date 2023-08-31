@@ -10,6 +10,9 @@
 #include "vbdev_lvol.h"
 #include "spdk/string.h"
 #include "spdk/log.h"
+#include "spdk/bdev_module.h"
+#include "spdk/bit_array.h"
+#include "spdk/base64.h"
 
 SPDK_LOG_REGISTER_COMPONENT(lvol_rpc)
 
@@ -1505,3 +1508,4 @@ cleanup:
 
 SPDK_RPC_REGISTER("bdev_lvol_shallow_copy_status", rpc_bdev_lvol_shallow_copy_status,
 		  SPDK_RPC_RUNTIME)
+		  

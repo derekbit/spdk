@@ -249,6 +249,22 @@ def bdev_lvol_shallow_copy_status(client, src_lvol_name):
     return client.call('bdev_lvol_shallow_copy_status', params)
 
 
+def bdev_get_fragmap(client, name, offset, size):
+    """Get bdev fragmap with given offset and size
+
+    Args:
+        name: bdev name
+        offset: offset in bytes
+        size: size in bytes
+    """
+    params = {
+        'name': name,
+        'offset': offset,
+        'size': size,
+    }
+    return client.call('bdev_get_fragmap', params)
+
+
 def bdev_lvol_delete_lvstore(client, uuid=None, lvs_name=None):
     """Destroy a logical volume store.
 

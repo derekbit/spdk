@@ -39,6 +39,10 @@ extern "C" {
 /* Ceiling division of unsigned integers */
 #define SPDK_CEIL_DIV(x,y) (((x)+(y)-1)/(y))
 
+#ifndef MIN
+#define MIN(x, y) spdk_min(x, y)
+#endif
+
 /**
  * Macro to align a value to a given power-of-two. The resultant value
  * will be of the same type as the first parameter, and will be no
@@ -306,6 +310,25 @@ spdk_memset_s(void *data, size_t data_size, int ch, size_t count)
 		buf[i] = (unsigned char)ch;
 	}
 #endif
+}
+
+/**
+ * @brief Check if \b dividend is divisible by \b divisor
+ * 
+ * @param dividend Dividend
+ * @param divisor Divisor which is a power of 2
+ * @return true
+ * @return false
+ */
+static inline bool
+is_divisible_by(uint64_t dividend, uint64_t divisor)
+{
+	return (dividend & (divisor - 1)) == 0;
+}
+
+static inline int
+bits_to_bytes(const int bits) {
+	return ((bits + 7) >> 3);
 }
 
 #ifdef __cplusplus

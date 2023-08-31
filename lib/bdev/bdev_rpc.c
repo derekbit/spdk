@@ -1230,3 +1230,54 @@ cleanup:
 }
 
 SPDK_RPC_REGISTER("bdev_get_histogram", rpc_bdev_get_histogram, SPDK_RPC_RUNTIME)
+
+struct rpc_bdev_get_fragmap {
+	char *name;
+	uint64_t offset;
+	uint64_t size;
+};
+
+static void
+free_rpc_bdev_get_fragmap(struct rpc_bdev_get_fragmap *r)
+{
+	free(r->name);
+}
+
+static const struct spdk_json_object_decoder rpc_bdev_get_fragmap_decoders[] = {
+	{"name", offsetof(struct rpc_bdev_get_fragmap, name), spdk_json_decode_string, true},
+	{"offset", offsetof(struct rpc_bdev_get_fragmap, offset), spdk_json_decode_uint64, true},
+	{"size", offsetof(struct rpc_bdev_get_fragmap, size), spdk_json_decode_uint64, true},
+};
+
+static void
+rpc_bdev_get_fragmap(struct spdk_jsonrpc_request *request, const struct spdk_json_val *params)
+{
+	struct rpc_bdev_get_fragmap req = {};
+	struct spdk_bdev *bdev;
+	struct spdk_bdev_desc *desc;
+	int rc;
+
+	if (spdk_json_decode_object(params, rpc_bdev_get_fragmap_decoders,
+				    SPDK_COUNTOF(rpc_bdev_get_fragmap_decoders),
+				    &req)) {
+		SPDK_ERRLOG("spdk_json_decode_object failed\n");
+		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
+						 "spdk_json_decode_object failed");
+		goto cleanup;
+	}
+
+	bdev = spdk_bdev_get_by_name(req.name);
+	if (bdev == NULL) {
+		SPDK_ERRLOG("bdev '%s' does not exist\n", req.name);
+		spdk_jsonrpc_send_error_response(request, -ENODEV, spdk_strerror(ENODEV));
+		goto cleanup;
+	}
+
+	SPDK_NOTICELOG("Debug ====> req.name=%s\n", req.name);
+
+	//rc = spdk_bdev_get_fragmap(lvs_name, );
+
+cleanup:
+	free_rpc_bdev_get_fragmap(&req);
+}
+SPDK_RPC_REGISTER("bdev_get_fragmap", rpc_bdev_get_fragmap, SPDK_RPC_RUNTIME)

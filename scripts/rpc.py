@@ -1198,6 +1198,17 @@ if __name__ == "__main__":
     p.add_argument('name', help='bdev name')
     p.set_defaults(func=bdev_get_histogram)
 
+    def bdev_get_fragmap(args):
+        print_json(rpc.lvol.bdev_get_fragmap(args.client,
+                                             name=args.name,
+                                             offset=args.offset,
+                                             size=args.size))
+    p = subparsers.add_parser('bdev_get_fragmap', help='Get bdev fragmap')
+    p.add_argument('name', help='bdev name')
+    p.add_argument('offset', help='offset in bytes', type=int)
+    p.add_argument('size', help='size in bytes', type=int)
+    p.set_defaults(func=bdev_get_fragmap)
+
     def bdev_set_qd_sampling_period(args):
         rpc.bdev.bdev_set_qd_sampling_period(args.client,
                                              name=args.name,
