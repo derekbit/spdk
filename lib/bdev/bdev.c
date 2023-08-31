@@ -10055,5 +10055,6 @@ spdk_bdev_get_fragmap(const char *bdev_name, uint64_t offset, uint64_t size,
 	// io->current_offset = req.offset;
 
 	// rc = spdk_bdev_seek_data(desc, channel, spdk_divide_round_up(req.offset, block_size), seek_data_done_cb, io);
+	return 0;
 }
 

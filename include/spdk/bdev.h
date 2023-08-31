@@ -2074,8 +2074,8 @@ typedef void (*spdk_bdev_get_fragmap_cb)(void *cb_arg, int status);
  * \param cb_fn Callback function to be called with data collected on bdev.
  * \param cb_arg Argument to pass to cb_fn.
  */
-void spdk_bdev_get_fragmap(const char *bdev_name, uint64_t offset, uint64_t size,
-			   spdk_bdev_get_fragmap_cb cb_fn, void *cb_arg);
+int spdk_bdev_get_fragmap(const char *bdev_name, uint64_t offset, uint64_t size,
+			  spdk_bdev_get_fragmap_cb cb_fn, void *cb_arg);
 
 #ifdef __cplusplus
 }
