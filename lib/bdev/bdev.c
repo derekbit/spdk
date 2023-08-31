@@ -9979,7 +9979,7 @@ SPDK_TRACE_REGISTER_FN(bdev_trace, "bdev", TRACE_GROUP_BDEV)
 // {
 // }
 
-void
+int
 spdk_bdev_get_fragmap(const char *bdev_name, uint64_t offset, uint64_t size,
 		      spdk_bdev_get_fragmap_cb cb_fn,
 		      struct spdk_jsonrpc_request *request)
