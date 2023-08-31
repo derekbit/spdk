@@ -9984,7 +9984,7 @@ int
 spdk_bdev_get_fragmap(const char *bdev_name, uint64_t offset, uint64_t size,
 		      spdk_bdev_get_fragmap_cb cb_fn, void *cb_arg)
 {
-	const char *lvs_name, *lvol_name;
+	char *lvs_name, *lvol_name;
 	struct spdk_bdev *bdev;
 	struct spdk_lvol *lvol;
 	struct spdk_uuid uuid;
@@ -10022,6 +10022,8 @@ spdk_bdev_get_fragmap(const char *bdev_name, uint64_t offset, uint64_t size,
 			lvs_name = bdev_name;
 			lvol = spdk_lvol_get_by_names(lvs_name, lvol_name);
 		}
+		SPDK_ERRLOG("Debug ==> lvs_name=%s\n", lvs_name);
+		SPDK_ERRLOG("Debug ==> lvol_name=%s\n", lvol_name);
 	}
 	if (lvol == NULL) {
 		SPDK_ERRLOG("lvol '%s' does not exist\n", bdev_name);
