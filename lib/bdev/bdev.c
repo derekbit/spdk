@@ -10004,19 +10004,26 @@ spdk_bdev_get_fragmap(const char *bdev_name, uint64_t offset, uint64_t size,
 		return -ENODEV;
 	}
 
-	if (spdk_uuid_parse(&uuid, req.name) == 0) {
+	if bdev->product_name == "Logical Volume" {
+		SPDK_ERRLOG("bdev '%s' is not a logical volume bdev\n", bdev_name);
+		return -ENOTSUP;
+	}
+
+	if (spdk_uuid_parse(&uuid, bdev_name) == 0) {
+		SPDK_ERRLOG("Debug ==> A\n");
 		lvol = spdk_lvol_get_by_uuid(&uuid);
 	} else {
-		lvol_name = strchr(req.name, '/');
+		SPDK_ERRLOG("Debug ==> B\n");
+		lvol_name = strchr(bdev_name, '/');
 		if (lvol_name != NULL) {
 			*lvol_name = '\0';
 			lvol_name++;
-			lvs_name = req.name;
+			lvs_name = bdev_name;
 			lvol = spdk_lvol_get_by_names(lvs_name, lvol_name);
 		}
 	}
 	if (lvol == NULL) {
-		SPDK_ERRLOG("lvol '%s' does not exist\n", req.name);
+		SPDK_ERRLOG("lvol '%s' does not exist\n", bdev_name);
 		return -ENODEV;
 	}
 
