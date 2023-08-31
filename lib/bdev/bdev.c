@@ -9981,7 +9981,7 @@ SPDK_TRACE_REGISTER_FN(bdev_trace, "bdev", TRACE_GROUP_BDEV)
 // }
 
 int
-spdk_bdev_get_fragmap(const char *bdev_name, uint64_t offset, uint64_t size,
+spdk_bdev_get_fragmap(char *bdev_name, uint64_t offset, uint64_t size,
 		      spdk_bdev_get_fragmap_cb cb_fn, void *cb_arg)
 {
 	char *lvs_name, *lvol_name;
