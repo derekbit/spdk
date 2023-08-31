@@ -2063,6 +2063,8 @@ void spdk_bdev_for_each_channel_continue(struct spdk_bdev_channel_iter *i, int s
 void spdk_bdev_for_each_channel(struct spdk_bdev *bdev, spdk_bdev_for_each_channel_msg fn,
 				void *ctx, spdk_bdev_for_each_channel_done cpl);
 
+typedef void (*spdk_bdev_get_fragmap_cb)(void *cb_arg, int status);
+
 /**
  * Get aggregated histogram data from a bdev. Callback provides merged histogram
  * for specified bdev.
@@ -2072,10 +2074,8 @@ void spdk_bdev_for_each_channel(struct spdk_bdev *bdev, spdk_bdev_for_each_chann
  * \param cb_fn Callback function to be called with data collected on bdev.
  * \param cb_arg Argument to pass to cb_fn.
  */
-void spdk_bdev_get_fragmap(struct spdk_bdev *bdev, struct spdk_histogram_data *histogram,
-			     spdk_bdev_histogram_data_cb cb_fn,
-			     void *cb_arg);
-
+void spdk_bdev_get_fragmap(const char *bdev_name, uint64_t offset, uint64_t size,
+			   spdk_bdev_get_fragmap_cb cb_fn, void *cb_arg);
 
 #ifdef __cplusplus
 }

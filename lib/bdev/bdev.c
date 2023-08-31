@@ -9979,90 +9979,81 @@ SPDK_TRACE_REGISTER_FN(bdev_trace, "bdev", TRACE_GROUP_BDEV)
 // {
 // }
 
-// static void
-// bdev_lvol_get_fragmap(struct spdk_jsonrpc_request *request, const struct spdk_json_val *params)
-// {
-// 	struct rpc_bdev_lvol_get_fragmap req = {};
-// 	struct spdk_lvol_store *lvs;
-// 	struct spdk_bdev *bdev;
-// 	struct spdk_bdev_desc *desc;
-// 	struct spdk_io_channel *channel;
-// 	struct spdk_bit_array *fragmap;
-// 	struct fragmap_io *io;
-// 	uint64_t cluster_size;
-// 	uint64_t block_size;
-// 	uint64_t num_clusters;
-// 	int rc;
+void
+spdk_bdev_get_fragmap(const char *bdev_name, uint64_t offset, uint64_t size,
+		      spdk_bdev_get_fragmap_cb cb_fn,
+		      struct spdk_jsonrpc_request *request)
+{
+	struct spdk_lvol_store *lvs;
+	struct spdk_bdev *bdev;
+	struct spdk_bdev_desc *desc;
+	struct spdk_io_channel *channel;
+	struct spdk_bit_array *fragmap;
+	struct fragmap_io *io;
+	uint64_t cluster_size;
+	uint64_t block_size;
+	uint64_t num_clusters;
+	int rc;
 
-// 	if (spdk_json_decode_object(params, rpc_bdev_lvol_get_fragmap_decoders,
-// 				    SPDK_COUNTOF(rpc_bdev_lvol_get_fragmap_decoders),
-// 				    &req)) {
-// 		SPDK_ERRLOG("spdk_json_decode_object failed\n");
-// 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
-// 						 "spdk_json_decode_object failed");
-// 		goto cleanup;
-// 	}
+	bdev = spdk_bdev_get_by_name(bdev_name);
+	if (bdev == NULL) {
+		SPDK_ERRLOG("bdev '%s' does not exist\n", req.lvol_name);
+		spdk_jsonrpc_send_error_response(request, -ENODEV, spdk_strerror(ENODEV));
+		return -ENODEV;
+	}
 
-// 	bdev = spdk_bdev_get_by_name(req.lvol_name);
-// 	if (bdev == NULL) {
-// 		SPDK_INFOLOG(lvol_rpc, "bdev '%s' does not exist\n", req.lvol_name);
-// 		spdk_jsonrpc_send_error_response(request, -ENODEV, spdk_strerror(ENODEV));
-// 		goto cleanup;
-// 	}
+	SPDK_ERRLOG("bdev '%s' does not exist\n", req.lvol_name);
 
-// 	lvs = vbdev_get_lvol_store_by_name(req.lvs_name);
-// 	if (lvs == NULL) {
-// 		spdk_jsonrpc_send_error_response_fmt(request, -ENOENT, "lvstore %s not found", req.lvs_name);
-// 		goto cleanup;
-// 	}
+	// lvs = vbdev_get_lvol_store_by_name(req.lvs_name);
+	// if (lvs == NULL) {
+	// 	spdk_jsonrpc_send_error_response_fmt(request, -ENOENT, "lvstore %s not found", req.lvs_name);
+	// 	goto cleanup;
+	// }
 
-// 	// Create a bitmap recording the allocated clusters
-// 	cluster_size = spdk_bs_get_cluster_size(lvs->blobstore);
-// 	block_size = spdk_bdev_get_block_size(bdev);
+	// // Create a bitmap recording the allocated clusters
+	// cluster_size = spdk_bs_get_cluster_size(lvs->blobstore);
+	// block_size = spdk_bdev_get_block_size(bdev);
 
-// 	if (!is_divisible_by(req.offset, cluster_size) || !is_divisible_by(req.size, cluster_size)) {
-// 		spdk_jsonrpc_send_error_response_fmt(request, -EINVAL,
-// 						     "offset %lu and size %lu must be a multiple of cluster size %lu",
-// 						     req.offset, req.size, cluster_size);
-// 		goto cleanup;
-// 	}
+	// if (!is_divisible_by(req.offset, cluster_size) || !is_divisible_by(req.size, cluster_size)) {
+	// 	spdk_jsonrpc_send_error_response_fmt(request, -EINVAL,
+	// 					     "offset %lu and size %lu must be a multiple of cluster size %lu",
+	// 					     req.offset, req.size, cluster_size);
+	// 	goto cleanup;
+	// }
 
-// 	num_clusters = spdk_divide_round_up(req.size, cluster_size);
-// 	fragmap = spdk_bit_array_create(num_clusters);
-// 	if (fragmap == NULL) {
-// 		spdk_jsonrpc_send_error_response(request, -ENOMEM, spdk_strerror(ENOMEM));
-// 		goto cleanup;
-// 	}
+	// num_clusters = spdk_divide_round_up(req.size, cluster_size);
+	// fragmap = spdk_bit_array_create(num_clusters);
+	// if (fragmap == NULL) {
+	// 	spdk_jsonrpc_send_error_response(request, -ENOMEM, spdk_strerror(ENOMEM));
+	// 	goto cleanup;
+	// }
 
-// 	// Construct a fragmap of the lvol
-// 	rc = spdk_bdev_open_ext(bdev->name, false, dummy_bdev_event_cb, NULL, &desc);
-// 	if (rc != 0) {
-// 		spdk_jsonrpc_send_error_response(request, rc, spdk_strerror(-rc));
-// 		goto cleanup;
-// 	}
+	// // Construct a fragmap of the lvol
+	// rc = spdk_bdev_open_ext(bdev->name, false, dummy_bdev_event_cb, NULL, &desc);
+	// if (rc != 0) {
+	// 	spdk_jsonrpc_send_error_response(request, rc, spdk_strerror(-rc));
+	// 	goto cleanup;
+	// }
 
-// 	io = spdk_zmalloc(sizeof(struct fragmap_io), 0, NULL, SPDK_ENV_LCORE_ID_ANY, SPDK_MALLOC_DMA);
-// 	if (io == NULL) {
-// 		spdk_jsonrpc_send_error_response(request, -ENOMEM, spdk_strerror(ENOMEM));
-// 		goto cleanup;
-// 	}
+	// io = spdk_zmalloc(sizeof(struct fragmap_io), 0, NULL, SPDK_ENV_LCORE_ID_ANY, SPDK_MALLOC_DMA);
+	// if (io == NULL) {
+	// 	spdk_jsonrpc_send_error_response(request, -ENOMEM, spdk_strerror(ENOMEM));
+	// 	goto cleanup;
+	// }
 
-// 	channel = spdk_bdev_get_io_channel(desc);
+	// channel = spdk_bdev_get_io_channel(desc);
 
-// 	io->bdev = bdev;
-// 	io->bdev_desc = desc;
-// 	io->bdev_io_channel = channel;
-// 	io->request = request;
-// 	io->fragmap = fragmap;
-// 	io->block_size = block_size;
-// 	io->cluster_size = cluster_size;
-// 	io->offset = req.offset;
-// 	io->size = req.size;
-// 	io->current_offset = req.offset;
+	// io->bdev = bdev;
+	// io->bdev_desc = desc;
+	// io->bdev_io_channel = channel;
+	// io->request = request;
+	// io->fragmap = fragmap;
+	// io->block_size = block_size;
+	// io->cluster_size = cluster_size;
+	// io->offset = req.offset;
+	// io->size = req.size;
+	// io->current_offset = req.offset;
 
-// 	rc = spdk_bdev_seek_data(desc, channel, spdk_divide_round_up(req.offset, block_size), seek_data_done_cb, io);
-
-// cleanup:
-// 	free_rpc_bdev_lvol_get_fragmap(&req);
-// }
-// SPDK_RPC_REGISTER("bdev_lvol_get_fragmap", rpc_bdev_lvol_get_fragmap, SPDK_RPC_RUNTIME)
+	// rc = spdk_bdev_seek_data(desc, channel, spdk_divide_round_up(req.offset, block_size), seek_data_done_cb, io);
+}
+SPDK_RPC_REGISTER("bdev_lvol_get_fragmap", rpc_bdev_lvol_get_fragmap, SPDK_RPC_RUNTIME)

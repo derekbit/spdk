@@ -1250,6 +1250,12 @@ static const struct spdk_json_object_decoder rpc_bdev_get_fragmap_decoders[] = {
 };
 
 static void
+_rpc_bdev_get_fragmap_cb(void *cb_arg, int status)
+{
+
+}
+
+static void
 rpc_bdev_get_fragmap(struct spdk_jsonrpc_request *request, const struct spdk_json_val *params)
 {
 	struct rpc_bdev_get_fragmap req = {};
@@ -1275,7 +1281,8 @@ rpc_bdev_get_fragmap(struct spdk_jsonrpc_request *request, const struct spdk_jso
 
 	SPDK_NOTICELOG("Debug ====> req.name=%s\n", req.name);
 
-	//rc = spdk_bdev_get_fragmap(lvs_name, );
+	spdk_bdev_get_fragmap(req.name, req.offset, req.size,
+			      _rpc_bdev_get_fragmap_cb, request);
 
 cleanup:
 	free_rpc_bdev_get_fragmap(&req);
