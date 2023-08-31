@@ -10002,7 +10002,7 @@ spdk_bdev_get_fragmap(const char *bdev_name, uint64_t offset, uint64_t size,
 		return -ENODEV;
 	}
 
-	SPDK_ERRLOG("bdev '%s' does not exist\n", req.lvol_name);
+	SPDK_ERRLOG("bdev '%s' does not exist\n", bdev_name);
 
 	// lvs = vbdev_get_lvol_store_by_name(req.lvs_name);
 	// if (lvs == NULL) {
