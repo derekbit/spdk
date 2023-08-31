@@ -10004,7 +10004,7 @@ spdk_bdev_get_fragmap(const char *bdev_name, uint64_t offset, uint64_t size,
 		return -ENODEV;
 	}
 
-	if bdev->product_name == "Logical Volume" {
+	if (bdev->product_name == "Logical Volume") {
 		SPDK_ERRLOG("bdev '%s' is not a logical volume bdev\n", bdev_name);
 		return -ENOTSUP;
 	}
