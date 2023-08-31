@@ -10056,4 +10056,4 @@ spdk_bdev_get_fragmap(const char *bdev_name, uint64_t offset, uint64_t size,
 
 	// rc = spdk_bdev_seek_data(desc, channel, spdk_divide_round_up(req.offset, block_size), seek_data_done_cb, io);
 }
-SPDK_RPC_REGISTER("bdev_lvol_get_fragmap", rpc_bdev_lvol_get_fragmap, SPDK_RPC_RUNTIME)
+
