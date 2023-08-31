@@ -9981,8 +9981,7 @@ SPDK_TRACE_REGISTER_FN(bdev_trace, "bdev", TRACE_GROUP_BDEV)
 
 int
 spdk_bdev_get_fragmap(const char *bdev_name, uint64_t offset, uint64_t size,
-		      spdk_bdev_get_fragmap_cb cb_fn,
-		      struct spdk_jsonrpc_request *request)
+		      spdk_bdev_get_fragmap_cb cb_fn, void *cb_arg)
 {
 	struct spdk_lvol_store *lvs;
 	struct spdk_bdev *bdev;
@@ -9998,7 +9997,6 @@ spdk_bdev_get_fragmap(const char *bdev_name, uint64_t offset, uint64_t size,
 	bdev = spdk_bdev_get_by_name(bdev_name);
 	if (bdev == NULL) {
 		SPDK_ERRLOG("bdev '%s' does not exist\n", bdev_name);
-		spdk_jsonrpc_send_error_response(request, -ENODEV, spdk_strerror(ENODEV));
 		return -ENODEV;
 	}
 
