@@ -9983,16 +9983,20 @@ int
 spdk_bdev_get_fragmap(const char *bdev_name, uint64_t offset, uint64_t size,
 		      spdk_bdev_get_fragmap_cb cb_fn, void *cb_arg)
 {
-	struct spdk_lvol_store *lvs;
+	char *lvs_name, *lvol_name;
 	struct spdk_bdev *bdev;
-	struct spdk_bdev_desc *desc;
-	struct spdk_io_channel *channel;
-	struct spdk_bit_array *fragmap;
-	struct fragmap_io *io;
-	uint64_t cluster_size;
-	uint64_t block_size;
-	uint64_t num_clusters;
-	int rc;
+	struct spdk_lvol *lvol;
+	struct spdk_uuid uuid;
+
+	// struct spdk_lvol_store *lvs;
+	// struct spdk_bdev_desc *desc;
+	// struct spdk_io_channel *channel;
+	// struct spdk_bit_array *fragmap;
+	// struct fragmap_io *io;
+	// uint64_t cluster_size;
+	// uint64_t block_size;
+	// uint64_t num_clusters;
+	// int rc;
 
 	bdev = spdk_bdev_get_by_name(bdev_name);
 	if (bdev == NULL) {
@@ -10000,7 +10004,23 @@ spdk_bdev_get_fragmap(const char *bdev_name, uint64_t offset, uint64_t size,
 		return -ENODEV;
 	}
 
-	SPDK_ERRLOG("bdev '%s' does not exist\n", bdev_name);
+	if (spdk_uuid_parse(&uuid, req.name) == 0) {
+		lvol = spdk_lvol_get_by_uuid(&uuid);
+	} else {
+		lvol_name = strchr(req.name, '/');
+		if (lvol_name != NULL) {
+			*lvol_name = '\0';
+			lvol_name++;
+			lvs_name = req.name;
+			lvol = spdk_lvol_get_by_names(lvs_name, lvol_name);
+		}
+	}
+	if (lvol == NULL) {
+		SPDK_ERRLOG("lvol '%s' does not exist\n", req.name);
+		return -ENODEV;
+	}
+
+	SPDK_ERRLOG("11bdev '%s' does not exist\n", bdev_name);
 
 	// lvs = vbdev_get_lvol_store_by_name(req.lvs_name);
 	// if (lvs == NULL) {
@@ -10053,6 +10073,5 @@ spdk_bdev_get_fragmap(const char *bdev_name, uint64_t offset, uint64_t size,
 	// io->current_offset = req.offset;
 
 	// rc = spdk_bdev_seek_data(desc, channel, spdk_divide_round_up(req.offset, block_size), seek_data_done_cb, io);
-	return 0;
 }
 
