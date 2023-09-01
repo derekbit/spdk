@@ -10,6 +10,9 @@
 #include "vbdev_lvol.h"
 #include "spdk/string.h"
 #include "spdk/log.h"
+#include "spdk/bdev_module.h"
+#include "spdk/bit_array.h"
+#include "spdk/base64.h"
 
 SPDK_LOG_REGISTER_COMPONENT(lvol_rpc)
 
@@ -443,7 +446,7 @@ rpc_bdev_lvol_snapshot(struct spdk_jsonrpc_request *request,
 
 	bdev = spdk_bdev_get_by_name(req.lvol_name);
 	if (bdev == NULL) {
-		SPDK_INFOLOG(lvol_rpc, "bdev '%s' does not exist\n", req.lvol_name);
+		SPDK_ERRLOG("bdev '%s' does not exist\n", req.lvol_name);
 		spdk_jsonrpc_send_error_response(request, -ENODEV, spdk_strerror(ENODEV));
 		goto cleanup;
 	}
@@ -521,7 +524,7 @@ rpc_bdev_lvol_clone(struct spdk_jsonrpc_request *request,
 
 	bdev = spdk_bdev_get_by_name(req.snapshot_name);
 	if (bdev == NULL) {
-		SPDK_INFOLOG(lvol_rpc, "bdev '%s' does not exist\n", req.snapshot_name);
+		SPDK_ERRLOG("bdev '%s' does not exist\n", req.snapshot_name);
 		spdk_jsonrpc_send_error_response(request, -ENODEV, spdk_strerror(ENODEV));
 		goto cleanup;
 	}
@@ -600,7 +603,7 @@ rpc_bdev_lvol_clone_bdev(struct spdk_jsonrpc_request *request, const struct spdk
 
 	bdev = spdk_bdev_get_by_name(req.bdev_name);
 	if (bdev == NULL) {
-		SPDK_INFOLOG(lvol_rpc, "bdev '%s' does not exist\n", req.bdev_name);
+		SPDK_ERRLOG("bdev '%s' does not exist\n", req.bdev_name);
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
 						 "bdev does not exist");
 		goto cleanup;
@@ -1505,3 +1508,267 @@ cleanup:
 
 SPDK_RPC_REGISTER("bdev_lvol_shallow_copy_status", rpc_bdev_lvol_shallow_copy_status,
 		  SPDK_RPC_RUNTIME)
+		  
+struct rpc_bdev_lvol_get_fragmap {
+	char *name;
+	uint64_t offset;
+	uint64_t size;
+};
+
+struct fragmap_io {
+	struct spdk_bdev *bdev;
+	struct spdk_bdev_desc *bdev_desc;
+	struct spdk_io_channel *bdev_io_channel;
+	struct spdk_jsonrpc_request *request;
+
+	struct spdk_bit_array *fragmap;
+
+	uint64_t cluster_size;
+	uint64_t block_size;
+	uint64_t num_allocated_clusters;
+
+	uint64_t offset;
+	uint64_t size;
+	uint64_t current_offset;
+};
+
+static void
+free_rpc_bdev_lvol_get_fragmap(struct rpc_bdev_lvol_get_fragmap *r)
+{
+	free(r->name);
+}
+
+static const struct spdk_json_object_decoder rpc_bdev_lvol_get_fragmap_decoders[] = {
+	{"name", offsetof(struct rpc_bdev_lvol_get_fragmap, name), spdk_json_decode_string, true},
+	{"offset", offsetof(struct rpc_bdev_lvol_get_fragmap, offset), spdk_json_decode_uint64, true},
+	{"size", offsetof(struct rpc_bdev_lvol_get_fragmap, size), spdk_json_decode_uint64, true},
+};
+
+static void seek_hole_done_cb(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg);
+
+static void
+get_fragmap_done(struct fragmap_io *io, int error_code, const char *error_msg)
+{
+	struct spdk_json_write_ctx *w = NULL;
+	char *encoded;
+
+	if (error_code != 0) {
+		spdk_jsonrpc_send_error_response_fmt(io->request, error_code, "%s: %s",
+						     error_msg, spdk_strerror(-error_code));
+		goto cleanup;
+	} 
+
+	encoded = spdk_bit_array_to_base64(io->fragmap);
+	if (encoded == NULL) {
+		SPDK_ERRLOG("Failed to encode fragmap to base64\n");
+		spdk_jsonrpc_send_error_response_fmt(io->request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
+						     "failed to encode fragmap");
+		goto cleanup;
+	}
+
+	w = spdk_jsonrpc_begin_result(io->request);
+	spdk_json_write_object_begin(w);
+
+	spdk_json_write_named_uint64(w, "cluster_size", io->cluster_size);
+	spdk_json_write_named_uint64(w, "num_clusters", spdk_bit_array_capacity(io->fragmap));
+	spdk_json_write_named_uint64(w, "num_allocated_clusters", io->num_allocated_clusters);
+	spdk_json_write_named_string(w, "fragmap", encoded);
+
+	spdk_json_write_object_end(w);
+	spdk_jsonrpc_end_result(io->request, w);
+
+	free(encoded);
+
+cleanup:
+	spdk_bit_array_free(&io->fragmap);
+	spdk_put_io_channel(io->bdev_io_channel);
+	spdk_bdev_close(io->bdev_desc);
+
+	spdk_free(io);
+}
+
+static void
+seek_data_done_cb(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg)
+{
+	struct fragmap_io *io = cb_arg;
+	uint64_t next_data_offset_blocks;
+	int rc;
+
+	next_data_offset_blocks = spdk_bdev_io_get_seek_offset(bdev_io);
+	spdk_bdev_free_io(bdev_io);
+
+	if (next_data_offset_blocks == UINT64_MAX) {
+		get_fragmap_done(io, 0, NULL);
+		return;
+	}
+
+	io->current_offset = next_data_offset_blocks * io->block_size;
+	rc = spdk_bdev_seek_hole(io->bdev_desc, io->bdev_io_channel,
+				 spdk_divide_round_up(io->current_offset, io->block_size),
+				 seek_hole_done_cb, io);
+	if (rc != 0) {
+		get_fragmap_done(io, rc, "failed to seek hole");
+	}
+}
+
+static void
+seek_hole_done_cb(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg)
+{
+	struct fragmap_io *io = cb_arg;
+	uint64_t next_offset;
+	uint64_t start_cluster;
+	uint64_t num_clusters;
+	int rc;
+
+	next_offset = spdk_bdev_io_get_seek_offset(bdev_io) * io->block_size;
+	next_offset = spdk_min(next_offset, io->offset + io->size);
+
+	start_cluster = spdk_divide_round_up(io->current_offset - io->offset, io->cluster_size);
+	num_clusters = spdk_divide_round_up(next_offset - io->current_offset, io->cluster_size);
+
+	for (uint64_t i = 0; i < num_clusters; i++) {
+		spdk_bit_array_set(io->fragmap, start_cluster + i);
+	}
+	io->num_allocated_clusters += num_clusters;
+
+	io->current_offset = next_offset;
+
+	if (io->current_offset == io->offset + io->size) {
+		get_fragmap_done(io, 0, NULL);
+		return;
+	}
+
+	rc = spdk_bdev_seek_data(io->bdev_desc, io->bdev_io_channel,
+				 spdk_divide_round_up(io->current_offset, io->block_size),
+				 seek_data_done_cb, io);
+	if (rc != 0) {
+		get_fragmap_done(io, rc, "failed to seek data");
+	}
+}
+
+static void
+dummy_bdev_event_cb(enum spdk_bdev_event_type type, struct spdk_bdev *bdev, void *ctx)
+{
+}
+
+static void
+rpc_bdev_lvol_get_fragmap(struct spdk_jsonrpc_request *request, const struct spdk_json_val *params)
+{
+	struct rpc_bdev_lvol_get_fragmap req = {};
+	struct spdk_bdev *bdev;
+	struct spdk_lvol *lvol;
+	struct spdk_bdev_desc *desc;
+	struct spdk_io_channel *channel;
+	struct spdk_bit_array *fragmap;
+	struct fragmap_io *io;
+	uint64_t cluster_size, num_clusters, block_size, num_blocks, lvol_size, segment_size;
+	int rc;
+
+	if (spdk_json_decode_object(params, rpc_bdev_lvol_get_fragmap_decoders,
+				    SPDK_COUNTOF(rpc_bdev_lvol_get_fragmap_decoders),
+				    &req)) {
+		SPDK_ERRLOG("spdk_json_decode_object failed\n");
+		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
+						 "spdk_json_decode_object failed");
+		goto cleanup;
+	}
+
+	bdev = spdk_bdev_get_by_name(req.name);
+	if (bdev == NULL) {
+		SPDK_ERRLOG("bdev '%s' does not exist\n", req.name);
+		spdk_jsonrpc_send_error_response(request, -ENODEV, spdk_strerror(ENODEV));
+		goto cleanup;
+	}
+
+	lvol = vbdev_lvol_get_from_bdev(bdev);
+	if (lvol == NULL) {
+		SPDK_ERRLOG("lvol does not exist\n");
+		spdk_jsonrpc_send_error_response(request, -ENODEV, spdk_strerror(ENODEV));
+		goto cleanup;
+	}
+
+	// Create a bitmap recording the allocated clusters
+	cluster_size = spdk_bs_get_cluster_size(lvol->lvol_store->blobstore);
+	block_size = spdk_bdev_get_block_size(bdev);
+	num_blocks = spdk_bdev_get_num_blocks(bdev);
+	lvol_size = num_blocks * block_size;
+
+	if (req.offset + req.size > lvol_size) {
+		SPDK_ERRLOG("offset %lu and size %lu exceed lvol size %lu\n",
+			    req.offset, req.size, lvol_size);
+		spdk_jsonrpc_send_error_response_fmt(request, -EINVAL,
+						     "offset %lu and size %lu exceed lvol size %lu",
+						     req.offset, req.size, lvol_size);
+		goto cleanup;
+	}
+
+	segment_size = req.size;
+	if (req.size == 0) {
+		segment_size = lvol_size;
+	}
+
+	if (!spdk_is_divisible_by(req.offset, cluster_size) ||
+	    !spdk_is_divisible_by(segment_size, cluster_size)) {
+		SPDK_ERRLOG("offset %lu and size %lu must be a multiple of cluster size %lu\n",
+			    req.offset, segment_size, cluster_size);
+		spdk_jsonrpc_send_error_response_fmt(request, -EINVAL,
+						     "offset %lu and size %lu must be a multiple of cluster size %lu",
+						     req.offset, segment_size, cluster_size);
+		goto cleanup;
+	}
+
+	num_clusters = spdk_divide_round_up(segment_size, cluster_size);
+	fragmap = spdk_bit_array_create(num_clusters);
+	if (fragmap == NULL) {
+		SPDK_ERRLOG("failed to allocate fragmap with num_clusters %lu\n", num_clusters);
+		spdk_jsonrpc_send_error_response(request, -ENOMEM,
+						 spdk_strerror(ENOMEM));
+		goto cleanup;
+	}
+
+	// Construct a fragmap of the lvol
+	rc = spdk_bdev_open_ext(bdev->name, false,
+				dummy_bdev_event_cb, NULL, &desc);
+	if (rc != 0) {
+		spdk_jsonrpc_send_error_response(request, rc, spdk_strerror(-rc));
+		goto cleanup;
+	}
+
+	channel = spdk_bdev_get_io_channel(desc);
+	if (channel == NULL) {
+		spdk_bdev_close(desc);
+		SPDK_ERRLOG("could not allocate I/O channel.\n");
+		spdk_jsonrpc_send_error_response(request, -ENOMEM,
+						 spdk_strerror(ENOMEM));
+		goto cleanup;
+	}
+
+	io = spdk_zmalloc(sizeof(struct fragmap_io), 0, NULL,
+			  SPDK_ENV_LCORE_ID_ANY, SPDK_MALLOC_DMA);
+	if (io == NULL) {
+		spdk_put_io_channel(channel);
+		spdk_bdev_close(desc);
+		spdk_jsonrpc_send_error_response(request, -ENOMEM,
+						 spdk_strerror(ENOMEM));
+		goto cleanup;
+	}
+
+	io->bdev = bdev;
+	io->bdev_desc = desc;
+	io->bdev_io_channel = channel;
+	io->request = request;
+	io->fragmap = fragmap;
+	io->block_size = block_size;
+	io->cluster_size = cluster_size;
+	io->offset = req.offset;
+	io->size = segment_size;
+	io->current_offset = req.offset;
+
+	rc = spdk_bdev_seek_data(desc, channel,
+				 spdk_divide_round_up(req.offset, block_size),
+				 seek_data_done_cb, io);
+cleanup:
+	free_rpc_bdev_lvol_get_fragmap(&req);
+}
+
+SPDK_RPC_REGISTER("bdev_lvol_get_fragmap", rpc_bdev_lvol_get_fragmap, SPDK_RPC_RUNTIME)
