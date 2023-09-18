@@ -6,7 +6,7 @@
 #  Copyright (c) 2022 Dell Inc, or its subsidiaries.
 #
 
-apt-get install -y gcc g++ make libcunit1-dev libaio-dev libssl-dev libjson-c-dev libcmocka-dev uuid-dev libiscsi-dev
+apt-get install -y gcc g++ make libcunit1-dev libaio-dev libssl-dev libjson-c-dev libcmocka-dev uuid-dev libiscsi-de
 apt-get install -y libncurses5-dev libncursesw5-dev python3 python3-pip python3-dev
 pip3 install ninja
 pip3 install meson
