@@ -1549,14 +1549,18 @@ raid_bdev_channel_suspend(struct spdk_io_channel_iter *i)
 
 	SPDK_DEBUGLOG(bdev_raid, "raid_ch: %p\n", raid_ch);
 
+	SPDK_NOTICELOG("Debug A1\n");
 	spdk_thread_exec_msg(spdk_thread_get_app_thread(), raid_bdev_inc_suspend_num_channels, raid_bdev);
 
+	SPDK_NOTICELOG("Debug A2\n");
 	raid_ch->is_suspended = true;
 	if (raid_ch->num_ios == 0) {
 		raid_bdev_channel_on_suspended(raid_ch);
 	}
 
+	SPDK_NOTICELOG("Debug A3\n");
 	spdk_for_each_channel_continue(i, 0);
+	SPDK_NOTICELOG("Debug A4\n");
 }
 
 static void
@@ -1572,11 +1576,14 @@ raid_bdev_suspend(struct raid_bdev *raid_bdev, raid_bdev_suspended_cb cb, void *
 {
 	assert(spdk_get_thread() == spdk_thread_get_app_thread());
 
+	SPDK_NOTICELOG("Debug try to acquire mutex\n");
 	pthread_mutex_lock(&raid_bdev->mutex);
+	SPDK_NOTICELOG("raid_bdev->suspend_cnt: %d\n", raid_bdev->suspend_cnt);
 	raid_bdev->suspend_cnt++;
 	pthread_mutex_unlock(&raid_bdev->mutex);
 
 	if (raid_bdev->suspend_cnt > 1 && raid_bdev->suspend_num_channels == 0) {
+		SPDK_NOTICELOG("Debug cb\n");
 		if (cb != NULL) {
 			cb(raid_bdev, cb_ctx);
 		}
@@ -1596,11 +1603,13 @@ raid_bdev_suspend(struct raid_bdev *raid_bdev, raid_bdev_suspended_cb cb, void *
 	}
 
 	/* decremented in raid_bdev_suspend_continue() - in case there are no IO channels */
+	SPDK_NOTICELOG("Debug A\n");
 	raid_bdev_inc_suspend_num_channels(raid_bdev);
 
+	SPDK_NOTICELOG("Debug B\n");
 	spdk_for_each_channel(raid_bdev, raid_bdev_channel_suspend, raid_bdev,
 			      raid_bdev_suspend_continue);
-
+	SPDK_NOTICELOG("Debug C\n");
 	return 0;
 }
 
