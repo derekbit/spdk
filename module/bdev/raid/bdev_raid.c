@@ -1695,6 +1695,7 @@ raid_bdev_remove_base_bdev_write_sb_cb(bool success, struct raid_bdev *raid_bdev
 		SPDK_ERRLOG("Failed to write raid bdev '%s' superblock\n", raid_bdev->bdev.name);
 	}
 
+	SPDK_NOTICELOG("base_bdev_updating to false 1\n");
 	raid_bdev->base_bdev_updating = false;
 	raid_bdev_resume(raid_bdev, NULL, NULL);
 }
@@ -1730,6 +1731,7 @@ raid_bdev_remove_base_bdev_done(struct spdk_io_channel_iter *i, int status)
 			raid_bdev_remove_base_bdev_write_sb_cb(false, raid_bdev, NULL);
 		}
 	} else {
+		SPDK_NOTICELOG("base_bdev_updating to false 2\n");
 		raid_bdev->base_bdev_updating = false;
 		raid_bdev_resume(raid_bdev, NULL, NULL);
 	}
@@ -1787,11 +1789,14 @@ raid_bdev_remove_base_bdev(struct spdk_bdev *base_bdev)
 		return -EBUSY;
 	}
 
+	SPDK_INFOLOG(bdev_raid, "base_bdev_updating to true 1\n");
 	raid_bdev->base_bdev_updating = true;
 	assert(base_info->desc);
 	base_info->remove_scheduled = true;
 
 	if (raid_bdev->state != RAID_BDEV_STATE_ONLINE) {
+		SPDK_NOTICELOG("raid bdev %s is not online, so no need to remove base bdev\n",
+			     raid_bdev->bdev.name);
 		/*
 		 * As raid bdev is not registered yet or already unregistered,
 		 * so cleanup should be done here itself.
@@ -1801,11 +1806,18 @@ raid_bdev_remove_base_bdev(struct spdk_bdev *base_bdev)
 			/* There is no base bdev for this raid, so free the raid device. */
 			raid_bdev_cleanup_and_free(raid_bdev);
 		}
+		SPDK_NOTICELOG("base_bdev_updating to false 3\n");
 		raid_bdev->base_bdev_updating = false;
 	} else if (raid_bdev->num_base_bdevs_operational-- == raid_bdev->min_base_bdevs_operational) {
+		SPDK_NOTICELOG("raid bdev %s is online, num_base_bdevs_operational=%" PRIu8
+			     " is less than min_base_bdevs_operational=%" PRIu8 ", so deconfigure it\n",
+			     raid_bdev->bdev.name, raid_bdev->num_base_bdevs_operational,
+			     raid_bdev->min_base_bdevs_operational);
 		raid_bdev_deconfigure(raid_bdev, NULL, NULL);
+		SPDK_NOTICELOG("base_bdev_updating to false 4\n");
 		raid_bdev->base_bdev_updating = false;
 	} else {
+		SPDK_NOTICELOG("raid bdev %s is online, so suspend it\n", raid_bdev->bdev.name);
 		return raid_bdev_suspend(raid_bdev, raid_bdev_remove_base_bdev_on_suspended, base_info);
 	}
 
@@ -1831,6 +1843,7 @@ raid_bdev_grow_base_bdev_on_resumed(void *_ctx, int rc)
 		ctx->status = rc;
 	}
 
+	SPDK_NOTICELOG("base_bdev_updating to false 5\n");
 	ctx->raid_bdev->base_bdev_updating = false;
 	ctx->cb_fn(ctx->cb_arg, ctx->status);
 	free(ctx->base_bdev_name);
@@ -2075,12 +2088,14 @@ raid_bdev_grow_base_bdev(struct raid_bdev *raid_bdev, char *base_bdev_name,
 		return -ENOMEM;
 	}
 
+	SPDK_NOTICELOG("base_bdev_updating to true 2\n");
 	raid_bdev->base_bdev_updating = true;
 
 	ctx->raid_bdev = raid_bdev;
 	ctx->base_bdev_name = strdup(base_bdev_name);
 	if (ctx->base_bdev_name == NULL) {
 		SPDK_ERRLOG("Unable to allocate memory for grow raid bdev base_bdev_name\n");
+		SPDK_NOTICELOG("base_bdev_updating to false 7\n");
 		raid_bdev->base_bdev_updating = false;
 		free(ctx);
 		return -ENOMEM;
@@ -2091,6 +2106,7 @@ raid_bdev_grow_base_bdev(struct raid_bdev *raid_bdev, char *base_bdev_name,
 
 	rc = raid_bdev_suspend(raid_bdev, raid_bdev_grow_base_bdev_on_suspended, ctx);
 	if (rc != 0) {
+		SPDK_NOTICELOG("base_bdev_updating to false 8\n");
 		raid_bdev->base_bdev_updating = false;
 		free(ctx->base_bdev_name);
 		free(ctx);
