@@ -1716,6 +1716,7 @@ raid_bdev_remove_base_bdev_done(struct spdk_io_channel_iter *i, int status)
 	struct raid_bdev *raid_bdev = base_info->raid_bdev;
 
 	if (raid_bdev->sb) {
+		SPDK_NOTICELOG("raid_bdev->sb\n");
 		struct raid_bdev_superblock *sb = raid_bdev->sb;
 		struct raid_bdev_sb_base_bdev *sb_base_bdev;
 		uint8_t slot = base_info - raid_bdev->base_bdev_info;
