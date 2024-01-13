@@ -267,6 +267,7 @@ raid1_submit_request(struct raid_bdev_io *raid_io)
 			continue;
 		}
 
+                SPDK_NOTICELOG("submit request, io type %u\n", bdev_io->type);
 		switch (bdev_io->type) {
 		case SPDK_BDEV_IO_TYPE_FLUSH:
 			ret = raid_bdev_flush_blocks(base_info, base_ch,
