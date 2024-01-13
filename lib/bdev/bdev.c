@@ -6071,10 +6071,14 @@ spdk_bdev_unmap_blocks(struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
 	struct spdk_bdev_io *bdev_io;
 	struct spdk_bdev_channel *channel = __io_ch_to_bdev_ch(ch);
 
+	SPDK_NOTICELOG("Unmap A offset_blocks=%" PRIu64 " num_blocks=%" PRIu64 "\n",
+		       offset_blocks, num_blocks);
 	if (!desc->write) {
 		return -EBADF;
 	}
 
+	SPDK_NOTICELOG("Unmap B offset_blocks=%" PRIu64 " num_blocks=%" PRIu64 "\n",
+		       offset_blocks, num_blocks);
 	if (!bdev_io_valid_blocks(bdev, offset_blocks, num_blocks)) {
 		return -EINVAL;
 	}
@@ -6105,6 +6109,8 @@ spdk_bdev_unmap_blocks(struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
 	bdev_io->u.bdev.memory_domain_ctx = NULL;
 	bdev_io->u.bdev.accel_sequence = NULL;
 
+	SPDK_NOTICELOG("Unmap C offset_blocks=%" PRIu64 " num_blocks=%" PRIu64 "\n",
+		       offset_blocks, num_blocks);
 	bdev_io_submit(bdev_io);
 	return 0;
 }
