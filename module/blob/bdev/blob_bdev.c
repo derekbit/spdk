@@ -262,6 +262,7 @@ bdev_blob_unmap(struct spdk_bs_dev *dev, struct spdk_io_channel *channel, uint64
 		 * the request. Blobstore does not rely on unmap zeroing
 		 * data.
 		 */
+		SPDK_NOTICELOG("bdev_blob_unmap: NO  lba=%" PRIu64 " lba_count=%" PRIu64 "\n", lba, lba_count);
 		cb_args->cb_fn(cb_args->channel, cb_args->cb_arg, 0);
 	}
 }
