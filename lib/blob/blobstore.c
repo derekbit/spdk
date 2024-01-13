@@ -3002,7 +3002,11 @@ blob_request_submit_op_single(struct spdk_io_channel *_ch, struct spdk_blob *blo
 			return;
 		}
 
+		SPDK_NOTICELOG("bs_batch_unmap_dev: A offset=%" PRIu64 " length=%" PRIu64 " is_allocated=%d\n",
+			       lba, lba_count, is_allocated);
 		if (is_allocated) {
+					SPDK_NOTICELOG("bs_batch_unmap_dev: B offset=%" PRIu64 " length=%" PRIu64 " is_allocated=%d\n",
+			       lba, lba_count, is_allocated);
 			bs_batch_unmap_dev(batch, lba, lba_count);
 		}
 
