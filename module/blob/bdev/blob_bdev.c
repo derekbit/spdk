@@ -244,7 +244,9 @@ bdev_blob_unmap(struct spdk_bs_dev *dev, struct spdk_io_channel *channel, uint64
 	struct blob_bdev *blob_bdev = (struct blob_bdev *)dev;
 	int rc;
 
+	SPDK_NOTICELOG("bdev_blob_unmap: AA  lba=%" PRIu64 " lba_count=%" PRIu64 "\n", lba, lba_count);
 	if (spdk_bdev_io_type_supported(blob_bdev->bdev, SPDK_BDEV_IO_TYPE_UNMAP)) {
+		SPDK_NOTICELOG("bdev_blob_unmap: BB  lba=%" PRIu64 " lba_count=%" PRIu64 "\n", lba, lba_count);
 		rc = spdk_bdev_unmap_blocks(__get_desc(dev), channel, lba, lba_count,
 					    bdev_blob_io_complete, cb_args);
 		if (rc == -ENOMEM) {
@@ -253,6 +255,7 @@ bdev_blob_unmap(struct spdk_bs_dev *dev, struct spdk_io_channel *channel, uint64
 		} else if (rc != 0) {
 			cb_args->cb_fn(cb_args->channel, cb_args->cb_arg, rc);
 		}
+		SPDK_NOTICELOG("bdev_blob_unmap: AA  lba=%" PRIu64 " lba_count=%" PRIu64 " rc=%d\n", lba, lba_count, rc);
 	} else {
 		/*
 		 * If the device doesn't support unmap, immediately complete
