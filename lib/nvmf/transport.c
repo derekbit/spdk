@@ -523,7 +523,7 @@ nvmf_stop_listen_disconnect_qpairs(struct spdk_io_channel_iter *i)
 	}
 
 	spdk_for_each_channel_continue(i, 0);
-	SPDK_NOTICELOG("Debug ---> nvmf_stop_listen_disconnect_qpairs end subnqn=%s\n", qpair_found, ctx->subsystem->subnqn);
+	SPDK_NOTICELOG("Debug ---> nvmf_stop_listen_disconnect_qpairs end subnqn=%s\n", ctx->subsystem->subnqn);
 }
 
 int

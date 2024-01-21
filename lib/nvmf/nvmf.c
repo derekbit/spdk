@@ -1084,7 +1084,7 @@ spdk_nvmf_poll_group_add(struct spdk_nvmf_poll_group *group,
 	/* We add the qpair to the group only it is successfully added into the tgroup */
 	if (rc == 0) {
 		SPDK_DTRACE_PROBE2_TICKS(nvmf_poll_group_add_qpair, qpair, spdk_thread_get_id(group->thread));
-		if (qpair->ctrl) {
+		if (qpair->ctrlr) {
 			if (qpair->ctrlr->subsys) {
 				SPDK_NOTICELOG("nvmf_poll_group_add_qpair subnqn=%s\n", qpair->ctrlr->subsys->subnqn);
 			} else {
