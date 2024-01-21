@@ -534,7 +534,11 @@ _nvmf_ctrlr_destruct(void *ctx)
 	assert(spdk_get_thread() == ctrlr->thread);
 	assert(ctrlr->in_destruct);
 
-	SPDK_DEBUGLOG(nvmf, "Destroy ctrlr 0x%hx\n", ctrlr->cntlid);
+	if (ctrlr->subsys) {
+		SPDK_NOTICELOG("Destroy ctrlr 0x%hx, subnqn=%s\n", ctrlr->cntlid, ctrlr->subsys->subnqn);
+	} else {
+		SPDK_NOTICELOG("Destroy ctrlr 0x%hx\n", ctrlr->cntlid);
+	}
 	if (ctrlr->disconnect_in_progress) {
 		SPDK_ERRLOG("freeing ctrlr with disconnect in progress\n");
 		spdk_thread_send_msg(ctrlr->thread, _nvmf_ctrlr_destruct, ctrlr);

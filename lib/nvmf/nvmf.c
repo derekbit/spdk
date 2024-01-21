@@ -1084,6 +1084,15 @@ spdk_nvmf_poll_group_add(struct spdk_nvmf_poll_group *group,
 	/* We add the qpair to the group only it is successfully added into the tgroup */
 	if (rc == 0) {
 		SPDK_DTRACE_PROBE2_TICKS(nvmf_poll_group_add_qpair, qpair, spdk_thread_get_id(group->thread));
+		if (qpair->ctrl) {
+			if (qpair->ctrlr->subsys) {
+				SPDK_NOTICELOG("nvmf_poll_group_add_qpair subnqn=%s\n", qpair->ctrlr->subsys->subnqn);
+			} else {
+				SPDK_NOTICELOG("nvmf_poll_group_add_qpair subnqn=%s\n", "NULL");
+			}
+		} else {
+			SPDK_NOTICELOG("nvmf_poll_group_add_qpair subnqn=%s\n", "NULL");
+		}
 		TAILQ_INSERT_TAIL(&group->qpairs, qpair, link);
 		nvmf_qpair_set_state(qpair, SPDK_NVMF_QPAIR_ACTIVE);
 	}
@@ -1096,6 +1105,11 @@ _nvmf_ctrlr_destruct(void *ctx)
 {
 	struct spdk_nvmf_ctrlr *ctrlr = ctx;
 
+	if (ctrlr->subsys) {
+		SPDK_NOTICELOG("nvmf_ctrlr_destruct subnqn=%s\n", ctrlr->subsys->subnqn);
+	} else {
+		SPDK_NOTICELOG("nvmf_ctrlr_destruct subnqn=%s\n", "NULL");
+	}
 	nvmf_ctrlr_destruct(ctrlr);
 }
 
@@ -1106,11 +1120,27 @@ _nvmf_ctrlr_free_from_qpair(void *ctx)
 	struct spdk_nvmf_ctrlr *ctrlr = qpair_ctx->ctrlr;
 	uint32_t count;
 
+	if (ctrlr->subsys) {
+		SPDK_NOTICELOG("_nvmf_ctrlr_free_from_qpair subnqn=%s\n", ctrlr->subsys->subnqn);
+	} else {
+		SPDK_NOTICELOG("_nvmf_ctrlr_free_from_qpair subnqn=%s\n", "NULL");
+	}
+
 	spdk_bit_array_clear(ctrlr->qpair_mask, qpair_ctx->qid);
 	count = spdk_bit_array_count_set(ctrlr->qpair_mask);
+	if (ctrlr->subsys) {
+		SPDK_NOTICELOG("_nvmf_ctrlr_free_from_qpair subnqn=%s count=%d\n", ctrlr->subsys->subnqn, count);
+	} else {
+		SPDK_NOTICELOG("_nvmf_ctrlr_free_from_qpair subnqn=%s count=%d\n", "NULL", count);
+	}
 	if (count == 0) {
 		assert(!ctrlr->in_destruct);
-		SPDK_DEBUGLOG(nvmf, "Last qpair %u, destroy ctrlr 0x%hx\n", qpair_ctx->qid, ctrlr->cntlid);
+		if (ctrlr->subsys) {
+			SPDK_NOTICELOG("Last qpair %u, destroy ctrlr 0x%hx subnqn=%s\n", qpair_ctx->qid, ctrlr->cntlid, ctrlr->subsys->subnqn);
+		} else {
+			SPDK_NOTICELOG("Last qpair %u, destroy ctrlr 0x%hx subnqn=%s\n", qpair_ctx->qid, ctrlr->cntlid, "NULL");
+		}
+		
 		ctrlr->in_destruct = true;
 		spdk_thread_send_msg(ctrlr->subsys->thread, _nvmf_ctrlr_destruct, ctrlr);
 	}
@@ -1128,9 +1158,22 @@ _nvmf_transport_qpair_fini_complete(void *cb_ctx)
 	struct spdk_thread *cb_thread = qpair_ctx->thread;
 
 	ctrlr = qpair_ctx->ctrlr;
-	SPDK_NOTICELOG("Finish destroying qid %u\n", qpair_ctx->qid);
+	if (ctrlr) {
+		if (ctrlr->subsys) {
+			SPDK_NOTICELOG("Finish destroying qid=%u subnqn=%s\n", qpair_ctx->qid, ctrlr->subsys->subnqn);
+		} else {
+			SPDK_NOTICELOG("Finish destroying qid=%u subnqn=%s A\n", qpair_ctx->qid, "NULL");
+		}
+	} else {
+		SPDK_NOTICELOG("Finish destroying qid=%u subnqn=%s B\n", qpair_ctx->qid, "NULL");
+	}
 
 	if (ctrlr) {
+		if (ctrlr->subsys) {
+			SPDK_NOTICELOG("_nvmf_transport_qpair_fini_complete subnqn=%s\n", ctrlr->subsys->subnqn);
+		} else {
+			SPDK_NOTICELOG("_nvmf_transport_qpair_fini_complete subnqn=%s\n", "NULL");
+		}
 		if (qpair_ctx->qid == 0) {
 			/* Admin qpair is removed, so set the pointer to NULL.
 			 * This operation is safe since we are on ctrlr thread now, admin qpair's thread is the same
@@ -1175,6 +1218,11 @@ spdk_nvmf_poll_group_remove(struct spdk_nvmf_qpair *qpair)
 		}
 	}
 
+	if (qpair->ctrlr->subsys) {
+		SPDK_NOTICELOG("spdk_nvmf_poll_group_remove subnqn=%s\n", qpair->ctrlr->subsys->subnqn);
+	} else {
+		SPDK_NOTICELOG("spdk_nvmf_poll_group_remove subnqn=%s\n", "NULL");
+	}
 	TAILQ_REMOVE(&qpair->group->qpairs, qpair, link);
 	qpair->group = NULL;
 }
