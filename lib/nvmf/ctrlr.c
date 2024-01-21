@@ -298,6 +298,8 @@ _nvmf_subsystem_add_ctrlr(void *ctx)
 	struct spdk_nvmf_fabric_connect_rsp *rsp = &req->rsp->connect_rsp;
 	struct spdk_nvmf_ctrlr *ctrlr = qpair->ctrlr;
 
+	SPDK_NOTICELOG("Debug ===> _nvmf_subsystem_add_ctrlr nvmf_subsystem_add_ctrlr subnqn=%s\n", ctrlr->subsys->subnqn);
+
 	if (nvmf_subsystem_add_ctrlr(ctrlr->subsys, ctrlr)) {
 		SPDK_ERRLOG("Unable to add controller to subsystem\n");
 		spdk_bit_array_free(&ctrlr->qpair_mask);
@@ -307,6 +309,8 @@ _nvmf_subsystem_add_ctrlr(void *ctx)
 		spdk_nvmf_request_complete(req);
 		return;
 	}
+
+	SPDK_NOTICELOG("Debug ===> _nvmf_subsystem_add_ctrlr _nvmf_ctrlr_add_admin_qpair subnqn=%s\n", ctrlr->subsys->subnqn);
 
 	spdk_thread_send_msg(ctrlr->thread, _nvmf_ctrlr_add_admin_qpair, req);
 }
@@ -389,7 +393,7 @@ nvmf_ctrlr_create(struct spdk_nvmf_subsystem *subsystem,
 	ctrlr->thread = req->qpair->group->thread;
 	ctrlr->disconnect_in_progress = false;
 
-	SPDK_NOTICELOG("Debug ===> max_qpairs_per_ctrlr=%u\n", transport->opts.max_qpairs_per_ctrlr);
+	SPDK_NOTICELOG("Debug ===> nvmf_ctrlr_create subnqn=%s max_qpairs_per_ctrlr=%u\n", subsystem->subnqn, transport->opts.max_qpairs_per_ctrlr);
 	ctrlr->qpair_mask = spdk_bit_array_create(transport->opts.max_qpairs_per_ctrlr);
 	if (!ctrlr->qpair_mask) {
 		SPDK_ERRLOG("Failed to allocate controller qpair mask\n");
@@ -498,6 +502,7 @@ nvmf_ctrlr_create(struct spdk_nvmf_subsystem *subsystem,
 
 	ctrlr->dif_insert_or_strip = transport->opts.dif_insert_or_strip;
 
+	SPDK_NOTICEINFO("Debug ===> nvmf_ctrlr_create ctrlr->subsys->subtype=%d\n", ctrlr->subsys->subtype);
 	if (ctrlr->subsys->subtype == SPDK_NVMF_SUBTYPE_NVME) {
 		if (spdk_nvmf_qpair_get_listen_trid(req->qpair, &listen_trid) != 0) {
 			SPDK_ERRLOG("Could not get listener transport ID\n");
@@ -821,8 +826,10 @@ _nvmf_ctrlr_connect(struct spdk_nvmf_request *req)
 		qpair->group->stat.current_io_qpairs++;
 	}
 
+	SPDK_NOTICELOG("Debug _nvmf_ctrlr_connect subnqn=%s qpair->qid=%u\n", data->subnqn, qpair->qid);
+
 	if (cmd->qid == 0) {
-		SPDK_DEBUGLOG(nvmf, "Connect Admin Queue for controller ID 0x%x\n", data->cntlid);
+		SPDK_NOTICELOG("Connect Admin Queue for controller ID 0x%x\n", data->cntlid);
 
 		if (spdk_nvme_trtype_is_fabrics(transport->ops->type) && data->cntlid != 0xFFFF) {
 			/* This NVMf target only supports dynamic mode. */
@@ -3642,6 +3649,7 @@ nvmf_ctrlr_process_fabrics_cmd(struct spdk_nvmf_request *req)
 	cap_hdr = &req->cmd->nvmf_cmd;
 
 	if (qpair->ctrlr == NULL) {
+		SPDK_NOTICELOG("Debug ===> nvmf_ctrlr_process_fabrics_cmd ctrlr is NULL\n");
 		/* No ctrlr established yet; the only valid command is Connect */
 		if (cap_hdr->fctype == SPDK_NVMF_FABRIC_COMMAND_CONNECT) {
 			return nvmf_ctrlr_cmd_connect(req);
@@ -3653,6 +3661,7 @@ nvmf_ctrlr_process_fabrics_cmd(struct spdk_nvmf_request *req)
 			return SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE;
 		}
 	} else if (nvmf_qpair_is_admin_queue(qpair)) {
+		SPDK_NOTICELOG("Debug ===> nvmf_ctrlr_process_fabrics_cmd cap_hdr->fctype = 0x%x\n", cap_hdr->fctype);
 		/*
 		 * Controller session is established, and this is an admin queue.
 		 * Disallow Connect and allow other fabrics commands.
