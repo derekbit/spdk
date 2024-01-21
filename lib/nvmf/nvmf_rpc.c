@@ -451,7 +451,7 @@ rpc_nvmf_create_subsystem(struct spdk_jsonrpc_request *request,
 
 	rc = spdk_nvmf_subsystem_start(subsystem,
 				       rpc_nvmf_subsystem_started,
-				       request);
+				       request, __func__);
 	if (rc) {
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
 						 "Failed to start subsystem");
@@ -555,7 +555,7 @@ rpc_nvmf_delete_subsystem(struct spdk_jsonrpc_request *request,
 
 	rc = spdk_nvmf_subsystem_stop(subsystem,
 				      rpc_nvmf_subsystem_stopped,
-				      request);
+				      request, __func__);
 	if (rc == -EBUSY) {
 		SPDK_ERRLOG("Subsystem currently in another state change try again later.\n");
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
@@ -687,7 +687,7 @@ nvmf_rpc_subsystem_listen(void *cb_arg, int status)
 		ctx->response_sent = true;
 	}
 
-	if (spdk_nvmf_subsystem_resume(ctx->subsystem, nvmf_rpc_listen_resumed, ctx)) {
+	if (spdk_nvmf_subsystem_resume(ctx->subsystem, nvmf_rpc_listen_resumed, ctx, __func__)) {
 		if (!ctx->response_sent) {
 			spdk_jsonrpc_send_error_response(ctx->request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
 							 "Internal error");
@@ -701,6 +701,8 @@ nvmf_rpc_stop_listen_async_done(void *cb_arg, int status)
 {
 	struct nvmf_rpc_listener_ctx *ctx = cb_arg;
 
+	SPDK_NOTICELOG("nvmf_rpc_stop_listen_async_done for nqn %s\n", ctx->subsystem->subnqn);
+
 	if (status) {
 		SPDK_ERRLOG("Unable to stop listener.\n");
 		spdk_jsonrpc_send_error_response_fmt(ctx->request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
@@ -708,7 +710,8 @@ nvmf_rpc_stop_listen_async_done(void *cb_arg, int status)
 		ctx->response_sent = true;
 	}
 
-	if (spdk_nvmf_subsystem_resume(ctx->subsystem, nvmf_rpc_listen_resumed, ctx)) {
+	SPDK_NOTICELOG("nvmf_rpc_stop_listen_async_done for nqn %s try to resume\n", ctx->subsystem->subnqn);
+	if (spdk_nvmf_subsystem_resume(ctx->subsystem, nvmf_rpc_listen_resumed, ctx, __func__)) {
 		if (!ctx->response_sent) {
 			spdk_jsonrpc_send_error_response(ctx->request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
 							 "Internal error");
@@ -730,7 +733,7 @@ nvmf_rpc_set_ana_state_done(void *cb_arg, int status)
 		ctx->response_sent = true;
 	}
 
-	if (spdk_nvmf_subsystem_resume(ctx->subsystem, nvmf_rpc_listen_resumed, ctx)) {
+	if (spdk_nvmf_subsystem_resume(ctx->subsystem, nvmf_rpc_listen_resumed, ctx, __func__)) {
 		if (!ctx->response_sent) {
 			spdk_jsonrpc_send_error_response(ctx->request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
 							 "Internal error");
@@ -760,8 +763,10 @@ nvmf_rpc_listen_paused(struct spdk_nvmf_subsystem *subsystem,
 			ctx->response_sent = true;
 		}
 	} else if (ctx->op == NVMF_RPC_LISTEN_REMOVE) {
+		SPDK_NOTICELOG("spdk_nvmf_subsystem_remove_listener for nqn %s\n", subsystem->subnqn);
 		rc = spdk_nvmf_subsystem_remove_listener(subsystem, &ctx->trid);
 		if (rc == 0) {
+			SPDK_NOTICELOG("spdk_nvmf_transport_stop_listen_async for nqn %s\n", subsystem->subnqn);
 			spdk_nvmf_transport_stop_listen_async(ctx->transport, &ctx->trid, subsystem,
 							      nvmf_rpc_stop_listen_async_done, ctx);
 			return;
@@ -778,7 +783,7 @@ nvmf_rpc_listen_paused(struct spdk_nvmf_subsystem *subsystem,
 		SPDK_UNREACHABLE();
 	}
 
-	if (spdk_nvmf_subsystem_resume(subsystem, nvmf_rpc_listen_resumed, ctx)) {
+	if (spdk_nvmf_subsystem_resume(subsystem, nvmf_rpc_listen_resumed, ctx, __func__)) {
 		if (!ctx->response_sent) {
 			spdk_jsonrpc_send_error_response(ctx->request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
 							 "Internal error");
@@ -894,7 +899,7 @@ rpc_nvmf_subsystem_add_listener(struct spdk_jsonrpc_request *request,
 	spdk_nvmf_listen_opts_init(&ctx->opts, sizeof(ctx->opts));
 	ctx->opts.transport_specific = params;
 
-	rc = spdk_nvmf_subsystem_pause(subsystem, 0, nvmf_rpc_listen_paused, ctx);
+	rc = spdk_nvmf_subsystem_pause(subsystem, 0, nvmf_rpc_listen_paused, ctx, __func__);
 	if (rc != 0) {
 		if (rc == -EBUSY) {
 			spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
@@ -973,8 +978,9 @@ rpc_nvmf_subsystem_remove_listener(struct spdk_jsonrpc_request *request,
 
 	ctx->op = NVMF_RPC_LISTEN_REMOVE;
 
-	rc = spdk_nvmf_subsystem_pause(subsystem, 0, nvmf_rpc_listen_paused, ctx);
+	rc = spdk_nvmf_subsystem_pause(subsystem, 0, nvmf_rpc_listen_paused, ctx, __func__);
 	if (rc != 0) {
+		SPDK_NOTICELOG("Debug --> rpc_nvmf_subsystem_remove_listener nqn %s rc = %d\n", subsystem->subnqn, rc);
 		if (rc == -EBUSY) {
 			spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
 							 "subsystem busy, retry later.\n");
@@ -1081,7 +1087,7 @@ rpc_nvmf_subsystem_listener_set_ana_state(struct spdk_jsonrpc_request *request,
 
 	ctx->op = NVMF_RPC_LISTEN_SET_ANA_STATE;
 
-	if (spdk_nvmf_subsystem_pause(subsystem, 0, nvmf_rpc_listen_paused, ctx)) {
+	if (spdk_nvmf_subsystem_pause(subsystem, 0, nvmf_rpc_listen_paused, ctx, __func__)) {
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
 						 "Internal error");
 		nvmf_rpc_listener_ctx_free(ctx);
@@ -1184,7 +1190,7 @@ nvmf_rpc_ns_resumed(struct spdk_nvmf_subsystem *subsystem,
 			return;
 		}
 
-		rc = spdk_nvmf_subsystem_resume(subsystem, nvmf_rpc_ns_failback_resumed, ctx);
+		rc = spdk_nvmf_subsystem_resume(subsystem, nvmf_rpc_ns_failback_resumed, ctx, __func__);
 		if (rc != 0) {
 			spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR, "Internal error");
 			nvmf_rpc_ns_ctx_free(ctx);
@@ -1239,7 +1245,7 @@ nvmf_rpc_ns_paused(struct spdk_nvmf_subsystem *subsystem,
 	}
 
 resume:
-	if (spdk_nvmf_subsystem_resume(subsystem, nvmf_rpc_ns_resumed, ctx)) {
+	if (spdk_nvmf_subsystem_resume(subsystem, nvmf_rpc_ns_resumed, ctx, __func__)) {
 		spdk_jsonrpc_send_error_response(ctx->request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR, "Internal error");
 		nvmf_rpc_ns_ctx_free(ctx);
 	}
@@ -1289,7 +1295,7 @@ rpc_nvmf_subsystem_add_ns(struct spdk_jsonrpc_request *request,
 		return;
 	}
 
-	rc = spdk_nvmf_subsystem_pause(subsystem, ctx->ns_params.nsid, nvmf_rpc_ns_paused, ctx);
+	rc = spdk_nvmf_subsystem_pause(subsystem, ctx->ns_params.nsid, nvmf_rpc_ns_paused, ctx, __func__);
 	if (rc != 0) {
 		if (rc == -EBUSY) {
 			spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
@@ -1357,7 +1363,7 @@ nvmf_rpc_remove_ns_paused(struct spdk_nvmf_subsystem *subsystem,
 		ctx->response_sent = true;
 	}
 
-	if (spdk_nvmf_subsystem_resume(subsystem, nvmf_rpc_remove_ns_resumed, ctx)) {
+	if (spdk_nvmf_subsystem_resume(subsystem, nvmf_rpc_remove_ns_resumed, ctx, __func__)) {
 		if (!ctx->response_sent) {
 			spdk_jsonrpc_send_error_response(ctx->request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR, "Internal error");
 		}
@@ -1409,7 +1415,7 @@ rpc_nvmf_subsystem_remove_ns(struct spdk_jsonrpc_request *request,
 		return;
 	}
 
-	rc = spdk_nvmf_subsystem_pause(subsystem, ctx->nsid, nvmf_rpc_remove_ns_paused, ctx);
+	rc = spdk_nvmf_subsystem_pause(subsystem, ctx->nsid, nvmf_rpc_remove_ns_paused, ctx, __func__);
 	if (rc != 0) {
 		if (rc == -EBUSY) {
 			spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
@@ -2331,7 +2337,7 @@ rpc_nvmf_get_controllers_paused(struct spdk_nvmf_subsystem *subsystem,
 
 	spdk_jsonrpc_end_result(ctx->request, w);
 
-	if (spdk_nvmf_subsystem_resume(ctx->subsystem, NULL, NULL)) {
+	if (spdk_nvmf_subsystem_resume(ctx->subsystem, NULL, NULL, __func__)) {
 		SPDK_ERRLOG("Resuming subsystem with NQN %s failed\n", ctx->nqn);
 		/* FIXME: RPC should fail if resuming the subsystem failed. */
 	}
@@ -2347,7 +2353,7 @@ rpc_nvmf_get_qpairs_done(struct spdk_io_channel_iter *i, int status)
 	spdk_json_write_array_end(ctx->w);
 	spdk_jsonrpc_end_result(ctx->request, ctx->w);
 
-	if (spdk_nvmf_subsystem_resume(ctx->subsystem, NULL, NULL)) {
+	if (spdk_nvmf_subsystem_resume(ctx->subsystem, NULL, NULL, __func__)) {
 		SPDK_ERRLOG("Resuming subsystem with NQN %s failed\n", ctx->nqn);
 		/* FIXME: RPC should fail if resuming the subsystem failed. */
 	}
@@ -2412,7 +2418,7 @@ rpc_nvmf_get_listeners_paused(struct spdk_nvmf_subsystem *subsystem,
 
 	spdk_jsonrpc_end_result(ctx->request, w);
 
-	if (spdk_nvmf_subsystem_resume(ctx->subsystem, NULL, NULL)) {
+	if (spdk_nvmf_subsystem_resume(ctx->subsystem, NULL, NULL, __func__)) {
 		SPDK_ERRLOG("Resuming subsystem with NQN %s failed\n", ctx->nqn);
 		/* FIXME: RPC should fail if resuming the subsystem failed. */
 	}
@@ -2468,7 +2474,7 @@ _rpc_nvmf_subsystem_query(struct spdk_jsonrpc_request *request,
 
 	ctx->subsystem = subsystem;
 
-	if (spdk_nvmf_subsystem_pause(subsystem, 0, cb_fn, ctx)) {
+	if (spdk_nvmf_subsystem_pause(subsystem, 0, cb_fn, ctx, __func__)) {
 		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INTERNAL_ERROR,
 						 "Internal error");
 		free_rpc_subsystem_query_ctx(ctx);

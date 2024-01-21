@@ -1727,27 +1727,27 @@ test_nvmf_subsystem_state_change(void)
 				sizeof(struct spdk_nvmf_poll_group),
 				NULL);
 
-	rc = spdk_nvmf_subsystem_start(discovery_subsystem, NULL, NULL);
+	rc = spdk_nvmf_subsystem_start(discovery_subsystem, NULL, NULL, __func__);
 	CU_ASSERT(rc == 0);
 	poll_threads();
 	CU_ASSERT(discovery_subsystem->state == SPDK_NVMF_SUBSYSTEM_ACTIVE);
-	rc = spdk_nvmf_subsystem_start(subsystem, NULL, NULL);
+	rc = spdk_nvmf_subsystem_start(subsystem, NULL, NULL, __func__);
 	CU_ASSERT(rc == 0);
 	poll_threads();
 	CU_ASSERT(subsystem->state == SPDK_NVMF_SUBSYSTEM_ACTIVE);
 
-	rc = spdk_nvmf_subsystem_pause(subsystem, SPDK_NVME_GLOBAL_NS_TAG, NULL, NULL);
+	rc = spdk_nvmf_subsystem_pause(subsystem, SPDK_NVME_GLOBAL_NS_TAG, NULL, NULL, __func__);
 	CU_ASSERT(rc == 0);
-	rc = spdk_nvmf_subsystem_stop(subsystem, NULL, NULL);
+	rc = spdk_nvmf_subsystem_stop(subsystem, NULL, NULL, __func__);
 	CU_ASSERT(rc == -EBUSY);
 	poll_threads();
 	CU_ASSERT(subsystem->state == SPDK_NVMF_SUBSYSTEM_PAUSED);
 
-	rc = spdk_nvmf_subsystem_stop(discovery_subsystem, NULL, NULL);
+	rc = spdk_nvmf_subsystem_stop(discovery_subsystem, NULL, NULL, __func__);
 	CU_ASSERT(rc == 0);
 	poll_threads();
 	CU_ASSERT(discovery_subsystem->state == SPDK_NVMF_SUBSYSTEM_INACTIVE);
-	rc = spdk_nvmf_subsystem_stop(subsystem, NULL, NULL);
+	rc = spdk_nvmf_subsystem_stop(subsystem, NULL, NULL, __func__);
 	CU_ASSERT(rc == 0);
 	poll_threads();
 	CU_ASSERT(subsystem->state == SPDK_NVMF_SUBSYSTEM_INACTIVE);

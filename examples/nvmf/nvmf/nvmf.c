@@ -457,7 +457,7 @@ nvmf_tgt_subsystem_stop_next(struct spdk_nvmf_subsystem *subsystem,
 	if (subsystem) {
 		rc = spdk_nvmf_subsystem_stop(subsystem,
 					      nvmf_tgt_subsystem_stop_next,
-					      cb_arg);
+					      cb_arg, __func__);
 		if (rc) {
 			nvmf_tgt_subsystem_stop_next(subsystem, cb_arg, 0);
 			fprintf(stderr, "Unable to stop NVMe-oF subsystem. Trying others.\n");
@@ -481,7 +481,7 @@ nvmf_tgt_stop_subsystems(struct nvmf_target *nvmf_tgt)
 	if (spdk_likely(subsystem)) {
 		rc = spdk_nvmf_subsystem_stop(subsystem,
 					      nvmf_tgt_subsystem_stop_next,
-					      NULL);
+					      NULL, __func__);
 		if (rc) {
 			nvmf_tgt_subsystem_stop_next(subsystem, NULL, 0);
 			fprintf(stderr, "Unable to stop NVMe-oF subsystem. Trying others.\n");
@@ -500,7 +500,7 @@ nvmf_tgt_subsystem_start_next(struct spdk_nvmf_subsystem *subsystem,
 	subsystem = spdk_nvmf_subsystem_get_next(subsystem);
 	if (subsystem) {
 		rc = spdk_nvmf_subsystem_start(subsystem, nvmf_tgt_subsystem_start_next,
-					       cb_arg);
+					       cb_arg, __func__);
 		if (rc) {
 			g_target_state = NVMF_FINI_STOP_SUBSYSTEMS;
 			fprintf(stderr, "Unable to start NVMe-oF subsystem. shutting down app.\n");
@@ -534,7 +534,7 @@ nvmf_tgt_start_subsystems(struct nvmf_target *nvmf_tgt)
 		 */
 		rc = spdk_nvmf_subsystem_start(subsystem,
 					       nvmf_tgt_subsystem_start_next,
-					       NULL);
+					       NULL, __func__);
 		if (rc) {
 			fprintf(stderr, "Unable to start NVMe-oF subsystem. shutting down app.\n");
 			g_target_state = NVMF_FINI_STOP_SUBSYSTEMS;

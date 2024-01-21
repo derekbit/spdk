@@ -23,9 +23,9 @@ DEFINE_STUB(spdk_nvmf_subsystem_get_nqn, const char *,
 	    (const struct spdk_nvmf_subsystem *subsystem), NULL);
 DEFINE_STUB(spdk_bdev_get_block_size, uint32_t, (const struct spdk_bdev *bdev), 512);
 DEFINE_STUB(spdk_nvmf_subsystem_pause, int, (struct spdk_nvmf_subsystem *subsystem,
-		uint32_t nsid, spdk_nvmf_subsystem_state_change_done cb_fn, void *cb_arg), 0);
+		uint32_t nsid, spdk_nvmf_subsystem_state_change_done cb_fn, void *cb_arg, char *func), 0);
 DEFINE_STUB(spdk_nvmf_subsystem_resume, int, (struct spdk_nvmf_subsystem *subsystem,
-		spdk_nvmf_subsystem_state_change_done cb_fn, void *cb_arg), 0);
+		spdk_nvmf_subsystem_state_change_done cb_fn, void *cb_arg, char *func), 0);
 DEFINE_STUB_V(spdk_nvmf_ctrlr_abort_aer, (struct spdk_nvmf_ctrlr *ctrlr));
 DEFINE_STUB(spdk_nvmf_ctrlr_async_event_error_event, int, (struct spdk_nvmf_ctrlr *ctrlr,
 		enum spdk_nvme_async_event_info_error info), 0);

@@ -108,7 +108,7 @@ static void
 nvmf_ctrlr_disconnect_qpairs_done(struct spdk_io_channel_iter *i, int status)
 {
 	if (status == 0) {
-		SPDK_DEBUGLOG(nvmf, "ctrlr disconnect qpairs complete successfully\n");
+		SPDK_NOTICELOG("ctrlr disconnect qpairs complete successfully\n");
 	} else {
 		SPDK_ERRLOG("Fail to disconnect ctrlr qpairs\n");
 	}
@@ -129,6 +129,8 @@ _nvmf_ctrlr_disconnect_qpairs_on_pg(struct spdk_io_channel_iter *i, bool include
 
 	TAILQ_FOREACH_SAFE(qpair, &group->qpairs, link, temp_qpair) {
 		if (qpair->ctrlr == ctrlr && (include_admin || !nvmf_qpair_is_admin_queue(qpair))) {
+			SPDK_NOTICELOG("Disconnecting qpair for host %s subsystem %s\n",
+				       ctrlr->hostnqn, ctrlr->subsys->subnqn);
 			rc = spdk_nvmf_qpair_disconnect(qpair, NULL, NULL);
 			if (rc) {
 				if (rc == -EINPROGRESS) {
@@ -174,10 +176,11 @@ nvmf_ctrlr_keep_alive_poll(void *ctx)
 	keep_alive_timeout_tick = ctrlr->last_keep_alive_tick +
 				  ctrlr->feat.keep_alive_timer.bits.kato * spdk_get_ticks_hz() / UINT64_C(1000);
 	if (now > keep_alive_timeout_tick) {
-		SPDK_NOTICELOG("Disconnecting host %s from subsystem %s due to keep alive timeout.\n",
-			       ctrlr->hostnqn, ctrlr->subsys->subnqn);
+		SPDK_NOTICELOG("Disconnecting host %s from subsystem %s due to keep alive timeout. (cfs=%u)\n",
+			       ctrlr->hostnqn, ctrlr->subsys->subnqn, ctrlr->vcprop.csts.bits.cfs);
 		/* set the Controller Fatal Status bit to '1' */
 		if (ctrlr->vcprop.csts.bits.cfs == 0) {
+			SPDK_NOTICELOG("Set the Controller Fatal Status bit to '1' ===> subsystem=%s\n", ctrlr->subsys->subnqn);
 			nvmf_ctrlr_set_fatal_status(ctrlr);
 
 			/*
@@ -189,6 +192,7 @@ nvmf_ctrlr_keep_alive_poll(void *ctx)
 					      nvmf_ctrlr_disconnect_qpairs_on_pg,
 					      ctrlr,
 					      nvmf_ctrlr_disconnect_qpairs_done);
+			SPDK_NOTICELOG("Set the Controller Fatal Status bit to '1' end ===> subsystem=%s\n", ctrlr->subsys->subnqn);
 			return SPDK_POLLER_BUSY;
 		}
 	}
@@ -203,6 +207,8 @@ nvmf_ctrlr_start_keep_alive_timer(struct spdk_nvmf_ctrlr *ctrlr)
 		SPDK_ERRLOG("Controller is NULL\n");
 		return;
 	}
+	SPDK_NOTICELOG("Keep Alive start for host %s from subsystem %s\n",
+		       ctrlr->hostnqn, ctrlr->subsys->subnqn);
 
 	/* if cleared to 0 then the Keep Alive Timer is disabled */
 	if (ctrlr->feat.keep_alive_timer.bits.kato != 0) {
@@ -3503,7 +3509,8 @@ nvmf_ctrlr_keep_alive(struct spdk_nvmf_request *req)
 {
 	struct spdk_nvmf_ctrlr *ctrlr = req->qpair->ctrlr;
 
-	SPDK_DEBUGLOG(nvmf, "Keep Alive\n");
+	SPDK_NOTICELOG("Keep Alive for host %s from subsystem %s\n",
+			ctrlr->hostnqn, ctrlr->subsys->subnqn);
 	/*
 	 * To handle keep alive just clear or reset the
 	 * ctrlr based keep alive duration counter.

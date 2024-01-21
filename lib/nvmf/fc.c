@@ -3088,7 +3088,7 @@ nvmf_fc_adm_listen_done(void *cb_arg, int status)
 	ASSERT_SPDK_FC_MAIN_THREAD();
 	struct nvmf_fc_add_rem_listener_ctx *ctx = cb_arg;
 
-	if (spdk_nvmf_subsystem_resume(ctx->subsystem, nvmf_fc_adm_subsystem_resume_cb, ctx)) {
+	if (spdk_nvmf_subsystem_resume(ctx->subsystem, nvmf_fc_adm_subsystem_resume_cb, ctx, __func__)) {
 		SPDK_ERRLOG("Failed to resume subsystem: %s\n", ctx->subsystem->subnqn);
 		free(ctx);
 	}
@@ -3142,7 +3142,7 @@ nvmf_fc_adm_add_rem_nport_listener(struct spdk_nvmf_fc_nport *nport, bool add)
 				} else if (spdk_nvmf_subsystem_pause(subsystem,
 								     0,
 								     nvmf_fc_adm_subsystem_paused_cb,
-								     ctx)) {
+								     ctx, __func__)) {
 					SPDK_ERRLOG("Failed to pause subsystem: %s\n",
 						    subsystem->subnqn);
 					free(ctx);

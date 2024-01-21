@@ -328,7 +328,9 @@ _nvmf_subsystem_remove_listener(struct spdk_nvmf_subsystem *subsystem,
 	struct spdk_nvmf_ctrlr *ctrlr;
 
 	if (stop) {
+		SPDK_NOTICELOG("Debug ---> remove listener\n");
 		transport = spdk_nvmf_tgt_get_transport(subsystem->tgt, listener->trid->trstring);
+		SPDK_NOTICELOG("Debug ---> remove listener transport=%p\n", transport);
 		if (transport != NULL) {
 			spdk_nvmf_transport_stop_listen(transport, listener->trid);
 		}
@@ -681,6 +683,7 @@ nvmf_subsystem_state_change(struct spdk_nvmf_subsystem *subsystem,
 	int rc;
 
 	if (__sync_val_compare_and_swap(&subsystem->changing_state, false, true)) {
+		SPDK_NOTICELOG("Debug ==> A\n");
 		return -EBUSY;
 	}
 
@@ -701,6 +704,7 @@ nvmf_subsystem_state_change(struct spdk_nvmf_subsystem *subsystem,
 	ctx = calloc(1, sizeof(*ctx));
 	if (!ctx) {
 		subsystem->changing_state = false;
+		SPDK_NOTICELOG("Debug ==> B\n");
 		return -ENOMEM;
 	}
 
@@ -709,6 +713,7 @@ nvmf_subsystem_state_change(struct spdk_nvmf_subsystem *subsystem,
 	if (rc) {
 		free(ctx);
 		subsystem->changing_state = false;
+		SPDK_NOTICELOG("Debug ==> C rc=%d\n", rc);
 		return rc;
 	}
 
@@ -729,16 +734,18 @@ nvmf_subsystem_state_change(struct spdk_nvmf_subsystem *subsystem,
 int
 spdk_nvmf_subsystem_start(struct spdk_nvmf_subsystem *subsystem,
 			  spdk_nvmf_subsystem_state_change_done cb_fn,
-			  void *cb_arg)
+			  void *cb_arg, char *func)
 {
+	SPDK_NOTICELOG("Debug --> spdk_nvmf_subsystem_start called by %s subsystem=%s\n", func, subsystem->subnqn);
 	return nvmf_subsystem_state_change(subsystem, 0, SPDK_NVMF_SUBSYSTEM_ACTIVE, cb_fn, cb_arg);
 }
 
 int
 spdk_nvmf_subsystem_stop(struct spdk_nvmf_subsystem *subsystem,
 			 spdk_nvmf_subsystem_state_change_done cb_fn,
-			 void *cb_arg)
+			 void *cb_arg, char *func)
 {
+	SPDK_NOTICELOG("Debug --> spdk_nvmf_subsystem_stop called by %s subsystem=%s\n", func, subsystem->subnqn);
 	return nvmf_subsystem_state_change(subsystem, 0, SPDK_NVMF_SUBSYSTEM_INACTIVE, cb_fn, cb_arg);
 }
 
@@ -746,16 +753,18 @@ int
 spdk_nvmf_subsystem_pause(struct spdk_nvmf_subsystem *subsystem,
 			  uint32_t nsid,
 			  spdk_nvmf_subsystem_state_change_done cb_fn,
-			  void *cb_arg)
+			  void *cb_arg, char *func)
 {
+	SPDK_NOTICELOG("Debug --> spdk_nvmf_subsystem_pause called by %s subsystem=%s\n", func, subsystem->subnqn);
 	return nvmf_subsystem_state_change(subsystem, nsid, SPDK_NVMF_SUBSYSTEM_PAUSED, cb_fn, cb_arg);
 }
 
 int
 spdk_nvmf_subsystem_resume(struct spdk_nvmf_subsystem *subsystem,
 			   spdk_nvmf_subsystem_state_change_done cb_fn,
-			   void *cb_arg)
+			   void *cb_arg, char *func)
 {
+	SPDK_NOTICELOG("Debug --> spdk_nvmf_subsystem_resume called by %s subsystem=%s\n", func, subsystem->subnqn);
 	return nvmf_subsystem_state_change(subsystem, 0, SPDK_NVMF_SUBSYSTEM_ACTIVE, cb_fn, cb_arg);
 }
 
@@ -1364,7 +1373,7 @@ _nvmf_ns_hot_remove(struct spdk_nvmf_subsystem *subsystem,
 		SPDK_ERRLOG("Failed to make changes to NVME-oF subsystem with id: %u\n", subsystem->id);
 	}
 
-	rc = spdk_nvmf_subsystem_resume(subsystem, NULL, NULL);
+	rc = spdk_nvmf_subsystem_resume(subsystem, NULL, NULL, __func__);
 	if (rc != 0) {
 		SPDK_ERRLOG("Failed to resume NVME-oF subsystem with id: %u\n", subsystem->id);
 	}
@@ -1380,7 +1389,7 @@ nvmf_ns_change_msg(void *ns_ctx)
 
 	SPDK_DTRACE_PROBE2(nvmf_ns_change, ctx->nsid, ctx->subsystem->subnqn);
 
-	rc = spdk_nvmf_subsystem_pause(ctx->subsystem, ctx->nsid, ctx->cb_fn, ctx);
+	rc = spdk_nvmf_subsystem_pause(ctx->subsystem, ctx->nsid, ctx->cb_fn, ctx, __func__);
 	if (rc) {
 		if (rc == -EBUSY) {
 			/* Try again, this is not a permanent situation. */
@@ -1412,7 +1421,7 @@ nvmf_ns_hot_remove(void *remove_ctx)
 	ns_ctx->nsid = ns->opts.nsid;
 	ns_ctx->cb_fn = _nvmf_ns_hot_remove;
 
-	rc = spdk_nvmf_subsystem_pause(ns->subsystem, ns_ctx->nsid, _nvmf_ns_hot_remove, ns_ctx);
+	rc = spdk_nvmf_subsystem_pause(ns->subsystem, ns_ctx->nsid, _nvmf_ns_hot_remove, ns_ctx, __func__);
 	if (rc) {
 		if (rc == -EBUSY) {
 			/* Try again, this is not a permanent situation. */
@@ -1430,7 +1439,7 @@ _nvmf_ns_resize(struct spdk_nvmf_subsystem *subsystem, void *cb_arg, int status)
 	struct subsystem_ns_change_ctx *ctx = cb_arg;
 
 	nvmf_subsystem_ns_changed(subsystem, ctx->nsid);
-	if (spdk_nvmf_subsystem_resume(subsystem, NULL, NULL) != 0) {
+	if (spdk_nvmf_subsystem_resume(subsystem, NULL, NULL, __func__) != 0) {
 		SPDK_ERRLOG("Failed to resume NVME-oF subsystem with id: %u\n", subsystem->id);
 	}
 
@@ -1460,7 +1469,7 @@ nvmf_ns_resize(void *event_ctx)
 	/* Specify 0 for the nsid here, because we do not need to pause the namespace.
 	 * Namespaces can only be resized bigger, so there is no need to quiesce I/O.
 	 */
-	rc = spdk_nvmf_subsystem_pause(ns->subsystem, 0, _nvmf_ns_resize, ns_ctx);
+	rc = spdk_nvmf_subsystem_pause(ns->subsystem, 0, _nvmf_ns_resize, ns_ctx, __func__);
 	if (rc) {
 		if (rc == -EBUSY) {
 			/* Try again, this is not a permanent situation. */

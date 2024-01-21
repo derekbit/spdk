@@ -417,7 +417,7 @@ typedef void (*spdk_nvmf_subsystem_state_change_done)(struct spdk_nvmf_subsystem
  */
 int spdk_nvmf_subsystem_start(struct spdk_nvmf_subsystem *subsystem,
 			      spdk_nvmf_subsystem_state_change_done cb_fn,
-			      void *cb_arg);
+			      void *cb_arg, char *func);
 
 /**
  * Transition an NVMe-oF subsystem from Active to Inactive state.
@@ -431,7 +431,7 @@ int spdk_nvmf_subsystem_start(struct spdk_nvmf_subsystem *subsystem,
  */
 int spdk_nvmf_subsystem_stop(struct spdk_nvmf_subsystem *subsystem,
 			     spdk_nvmf_subsystem_state_change_done cb_fn,
-			     void *cb_arg);
+			     void *cb_arg, char *func);
 
 /**
  * Transition an NVMe-oF subsystem from Active to Paused state.
@@ -451,7 +451,7 @@ int spdk_nvmf_subsystem_stop(struct spdk_nvmf_subsystem *subsystem,
 int spdk_nvmf_subsystem_pause(struct spdk_nvmf_subsystem *subsystem,
 			      uint32_t nsid,
 			      spdk_nvmf_subsystem_state_change_done cb_fn,
-			      void *cb_arg);
+			      void *cb_arg, char *func);
 
 /**
  * Transition an NVMe-oF subsystem from Paused to Active state.
@@ -467,7 +467,7 @@ int spdk_nvmf_subsystem_pause(struct spdk_nvmf_subsystem *subsystem,
  */
 int spdk_nvmf_subsystem_resume(struct spdk_nvmf_subsystem *subsystem,
 			       spdk_nvmf_subsystem_state_change_done cb_fn,
-			       void *cb_arg);
+			       void *cb_arg, char *func);
 
 /**
  * Search the target for a subsystem with the given NQN.

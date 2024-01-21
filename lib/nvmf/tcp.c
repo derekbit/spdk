@@ -868,7 +868,7 @@ nvmf_tcp_stop_listen(struct spdk_nvmf_transport *transport,
 
 	ttransport = SPDK_CONTAINEROF(transport, struct spdk_nvmf_tcp_transport, transport);
 
-	SPDK_DEBUGLOG(nvmf_tcp, "Removing listen address %s port %s\n",
+	SPDK_NOTICELOG("Removing listen address %s port %s\n",
 		      trid->traddr, trid->trsvcid);
 
 	port = nvmf_tcp_find_port(ttransport, trid);

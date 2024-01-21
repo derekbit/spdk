@@ -3220,7 +3220,7 @@ vfio_user_quiesce_done(void *ctx)
 	SPDK_DEBUGLOG(nvmf_vfio, "%s start to resume\n", ctrlr_id(vu_ctrlr));
 	vu_ctrlr->state = VFIO_USER_CTRLR_RESUMING;
 	ret = spdk_nvmf_subsystem_resume((struct spdk_nvmf_subsystem *)endpoint->subsystem,
-					 vfio_user_endpoint_resume_done, endpoint);
+					 vfio_user_endpoint_resume_done, endpoint, __func__);
 	if (ret < 0) {
 		vu_ctrlr->state = VFIO_USER_CTRLR_PAUSED;
 		SPDK_ERRLOG("%s: failed to resume, ret=%d\n", endpoint_id(endpoint), ret);
@@ -3283,7 +3283,7 @@ vfio_user_quiesce_pg(void *ctx)
 	}
 
 	ret = spdk_nvmf_subsystem_pause(subsystem, SPDK_NVME_GLOBAL_NS_TAG,
-					vfio_user_pause_done, quiesce_ctx);
+					vfio_user_pause_done, quiesce_ctx, __func__);
 	if (ret < 0) {
 		SPDK_ERRLOG("%s: failed to pause, ret=%d\n",
 			    endpoint_id(endpoint), ret);
@@ -3955,7 +3955,7 @@ vfio_user_migration_device_state_transition(vfu_ctx_t *vfu_ctx, vfu_migr_state_t
 			/* Rollback source VM */
 			vu_ctrlr->state = VFIO_USER_CTRLR_RESUMING;
 			ret = spdk_nvmf_subsystem_resume((struct spdk_nvmf_subsystem *)endpoint->subsystem,
-							 vfio_user_endpoint_resume_done, endpoint);
+							 vfio_user_endpoint_resume_done, endpoint, __func__);
 			if (ret < 0) {
 				/* TODO: fail controller with CFS bit set */
 				vu_ctrlr->state = VFIO_USER_CTRLR_PAUSED;
@@ -5345,7 +5345,7 @@ nvmf_vfio_user_close_qpair(struct spdk_nvmf_qpair *qpair,
 			 * new connection.
 			 */
 			spdk_nvmf_subsystem_resume((struct spdk_nvmf_subsystem *)endpoint->subsystem,
-						   vfio_user_endpoint_resume_done, endpoint);
+						   vfio_user_endpoint_resume_done, endpoint, __func__);
 		}
 		free_ctrlr(vu_ctrlr);
 	}

@@ -1122,13 +1122,13 @@ _nvmf_transport_qpair_fini_complete(void *cb_ctx)
 {
 	struct nvmf_qpair_disconnect_ctx *qpair_ctx = cb_ctx;
 	struct spdk_nvmf_ctrlr *ctrlr;
-	/* Store cb args since cb_ctx can be freed in _nvmf_ctrlr_free_from_qpair */
+	/* Store cb args since cb_ctx can be freed in _nvmf_ctrlr_free_from_qpaiqr */
 	nvmf_qpair_disconnect_cb cb_fn = qpair_ctx->cb_fn;
 	void *cb_arg = qpair_ctx->ctx;
 	struct spdk_thread *cb_thread = qpair_ctx->thread;
 
 	ctrlr = qpair_ctx->ctrlr;
-	SPDK_DEBUGLOG(nvmf, "Finish destroying qid %u\n", qpair_ctx->qid);
+	SPDK_NOTICELOG("Finish destroying qid %u\n", qpair_ctx->qid);
 
 	if (ctrlr) {
 		if (qpair_ctx->qid == 0) {
@@ -1203,6 +1203,7 @@ _nvmf_qpair_destroy(void *ctx, int status)
 	struct spdk_nvmf_subsystem_poll_group *sgroup;
 	uint32_t sid;
 
+	SPDK_NOTICELOG("_nvmf_qpair_destroy ctrlr=%s\n", ctrlr->subsys->subnqn);
 	assert(qpair->state == SPDK_NVMF_QPAIR_DEACTIVATING);
 	qpair_ctx->qid = qpair->qid;
 
@@ -1221,9 +1222,11 @@ _nvmf_qpair_destroy(void *ctx, int status)
 	}
 
 	if (ctrlr) {
+		SPDK_NOTICELOG("_nvmf_qpair_destroy A ctrlr=%s\n", ctrlr->subsys->subnqn);
 		sgroup = &qpair->group->sgroups[ctrlr->subsys->id];
 		_nvmf_qpair_sgroup_req_clean(sgroup, qpair);
 	} else {
+		SPDK_NOTICELOG("_nvmf_qpair_destroy B ctrlr=%s\n", ctrlr->subsys->subnqn);
 		for (sid = 0; sid < qpair->group->num_sgroups; sid++) {
 			sgroup = &qpair->group->sgroups[sid];
 			assert(sgroup != NULL);
@@ -1231,9 +1234,12 @@ _nvmf_qpair_destroy(void *ctx, int status)
 		}
 	}
 
+	SPDK_NOTICELOG("_nvmf_qpair_destroy C ctrlr=%s\n", ctrlr->subsys->subnqn);
 	qpair_ctx->ctrlr = ctrlr;
 	spdk_nvmf_poll_group_remove(qpair);
+	SPDK_NOTICELOG("_nvmf_qpair_destroy D ctrlr=%s\n", ctrlr->subsys->subnqn);
 	nvmf_transport_qpair_fini(qpair, _nvmf_transport_qpair_fini_complete, qpair_ctx);
+	SPDK_NOTICELOG("_nvmf_qpair_destroy E ctrlr=%s\n", ctrlr->subsys->subnqn);
 }
 
 static void
@@ -1255,15 +1261,18 @@ spdk_nvmf_qpair_disconnect(struct spdk_nvmf_qpair *qpair, nvmf_qpair_disconnect_
 	struct nvmf_qpair_disconnect_ctx *qpair_ctx;
 
 	if (__atomic_test_and_set(&qpair->disconnect_started, __ATOMIC_RELAXED)) {
+		SPDK_NOTICELOG("spdk_nvmf_qpair_disconnect EINPROGRESS subnqn=%s\n", qpair->ctrl->subsys->subnqn);
 		return -EINPROGRESS;
 	}
 
+	SPDK_NOTICELOG("spdk_nvmf_qpair_disconnect subnqn=%s\n", qpair->ctrl->subsys->subnqn);
 	if (cb_fn || ctx) {
 		SPDK_LOG_DEPRECATED(spdk_nvmf_qpair_disconnect);
 	}
 
 	/* If we get a qpair in the uninitialized state, we can just destroy it immediately */
 	if (qpair->state == SPDK_NVMF_QPAIR_UNINITIALIZED) {
+		SPDK_NOTICELOG("spdk_nvmf_qpair_disconnect SPDK_NVMF_QPAIR_UNINITIALIZED subnqn=%s\n", qpair->ctrl->subsys->subnqn);
 		nvmf_transport_qpair_fini(qpair, NULL, NULL);
 		if (cb_fn) {
 			cb_fn(ctx);
@@ -1273,6 +1282,7 @@ spdk_nvmf_qpair_disconnect(struct spdk_nvmf_qpair *qpair, nvmf_qpair_disconnect_
 
 	assert(group != NULL);
 	if (spdk_get_thread() != group->thread) {
+		SPDK_NOTICELOG("spdk_nvmf_qpair_disconnect spdk_get_thread() != group->thread subnqn=%s\n", qpair->ctrl->subsys->subnqn);
 		/* clear the atomic so we can set it on the next call on the proper thread. */
 		__atomic_clear(&qpair->disconnect_started, __ATOMIC_RELAXED);
 		qpair_ctx = calloc(1, sizeof(struct nvmf_qpair_disconnect_ctx));
@@ -1285,6 +1295,7 @@ spdk_nvmf_qpair_disconnect(struct spdk_nvmf_qpair *qpair, nvmf_qpair_disconnect_
 		qpair_ctx->thread = group->thread;
 		qpair_ctx->ctx = ctx;
 		spdk_thread_send_msg(group->thread, _nvmf_qpair_disconnect_msg, qpair_ctx);
+		SPDK_NOTICELOG("spdk_nvmf_qpair_disconnect spdk_get_thread() != group->thread end subnqn=%s\n", qpair->ctrl->subsys->subnqn);
 		return 0;
 	}
 
@@ -1305,6 +1316,7 @@ spdk_nvmf_qpair_disconnect(struct spdk_nvmf_qpair *qpair, nvmf_qpair_disconnect_
 
 	/* Check for outstanding I/O */
 	if (!TAILQ_EMPTY(&qpair->outstanding)) {
+		SPDK_NOTICELOG("spdk_nvmf_qpair_disconnect outstanding subnqn=%s\n", qpair->ctrl->subsys->subnqn);
 		SPDK_DTRACE_PROBE2_TICKS(nvmf_poll_group_drain_qpair, qpair, spdk_thread_get_id(group->thread));
 		qpair->state_cb = _nvmf_qpair_destroy;
 		qpair->state_cb_arg = qpair_ctx;
@@ -1313,6 +1325,7 @@ spdk_nvmf_qpair_disconnect(struct spdk_nvmf_qpair *qpair, nvmf_qpair_disconnect_
 		return 0;
 	}
 
+	SPDK_NOTICELOG("spdk_nvmf_qpair_disconnect _nvmf_qpair_destroy subnqn=%s\n", qpair->ctrl->subsys->subnqn);
 	_nvmf_qpair_destroy(qpair_ctx, 0);
 
 	return 0;

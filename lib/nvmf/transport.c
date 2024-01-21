@@ -426,9 +426,11 @@ spdk_nvmf_transport_stop_listen(struct spdk_nvmf_transport *transport,
 
 	listener = nvmf_transport_find_listener(transport, trid);
 	if (!listener) {
+		SPDK_NOTICELOG("Debug --> listener ENOENT\n");
 		return -ENOENT;
 	}
 
+	SPDK_NOTICELOG("Debug --> listener->ref = %d\n", listener->ref);
 	if (--listener->ref == 0) {
 		TAILQ_REMOVE(&transport->listeners, listener, link);
 		pthread_mutex_lock(&transport->mutex);
@@ -459,14 +461,19 @@ nvmf_stop_listen_fini(struct spdk_io_channel_iter *i, int status)
 	transport = ctx->transport;
 	assert(transport != NULL);
 
+	SPDK_NOTICELOG("Debug ---> nvmf_stop_listen_fini\n");
+
 	rc = spdk_nvmf_transport_stop_listen(transport, &ctx->trid);
 	if (rc) {
 		SPDK_ERRLOG("Failed to stop listening on address '%s'\n", ctx->trid.traddr);
 	}
 
 	if (ctx->cb_fn) {
+		SPDK_NOTICELOG("Debug ---> nvmf_stop_listen_fini cb_fn1\n");
 		ctx->cb_fn(ctx->cb_arg, rc);
+		SPDK_NOTICELOG("Debug ---> nvmf_stop_listen_fini cb_fn2\n");
 	}
+	SPDK_NOTICELOG("Debug ---> nvmf_stop_listen_fini end\n");
 	free(ctx);
 }
 
@@ -492,6 +499,7 @@ nvmf_stop_listen_disconnect_qpairs(struct spdk_io_channel_iter *i)
 	ch = spdk_io_channel_iter_get_channel(i);
 	group = spdk_io_channel_get_ctx(ch);
 
+	SPDK_NOTICELOG("Debug ---> nvmf_stop_listen_disconnect_qpairs subnqn=%s\n", ctx->subsystem->subnqn);
 	TAILQ_FOREACH_SAFE(qpair, &group->qpairs, link, tmp_qpair) {
 		if (spdk_nvmf_qpair_get_listen_trid(qpair, &tmp_trid)) {
 			continue;
@@ -508,12 +516,14 @@ nvmf_stop_listen_disconnect_qpairs(struct spdk_io_channel_iter *i)
 			}
 		}
 	}
+	SPDK_NOTICELOG("Debug ---> nvmf_stop_listen_disconnect_qpairs found=%d subnqn=%s\n", qpair_found, ctx->subsystem->subnqn);
 	if (qpair_found) {
 		spdk_thread_send_msg(spdk_get_thread(), nvmf_stop_listen_disconnect_qpairs_msg, i);
 		return;
 	}
 
 	spdk_for_each_channel_continue(i, 0);
+	SPDK_NOTICELOG("Debug ---> nvmf_stop_listen_disconnect_qpairs end subnqn=%s\n", qpair_found, ctx->subsystem->subnqn);
 }
 
 int
@@ -532,6 +542,7 @@ spdk_nvmf_transport_stop_listen_async(struct spdk_nvmf_transport *transport,
 
 	ctx = calloc(1, sizeof(struct nvmf_stop_listen_ctx));
 	if (ctx == NULL) {
+		SPDK_NOTICELOG("Debug ---> spdk_nvmf_transport_stop_listen_async ENOMEM\n");
 		return -ENOMEM;
 	}
 
@@ -541,6 +552,7 @@ spdk_nvmf_transport_stop_listen_async(struct spdk_nvmf_transport *transport,
 	ctx->cb_fn = cb_fn;
 	ctx->cb_arg = cb_arg;
 
+	SPDK_NOTICELOG("Debug ---> spdk_nvmf_transport_stop_listen_async nqn=%s\n", subsystem->subnqn);
 	spdk_for_each_channel(transport->tgt, nvmf_stop_listen_disconnect_qpairs, ctx,
 			      nvmf_stop_listen_fini);
 
