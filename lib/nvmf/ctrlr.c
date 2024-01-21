@@ -502,7 +502,7 @@ nvmf_ctrlr_create(struct spdk_nvmf_subsystem *subsystem,
 
 	ctrlr->dif_insert_or_strip = transport->opts.dif_insert_or_strip;
 
-	SPDK_NOTICEINFO("Debug ===> nvmf_ctrlr_create ctrlr->subsys->subtype=%d\n", ctrlr->subsys->subtype);
+	SPDK_NOTICELOG("Debug ===> nvmf_ctrlr_create ctrlr->subsys->subtype=%d\n", ctrlr->subsys->subtype);
 	if (ctrlr->subsys->subtype == SPDK_NVMF_SUBTYPE_NVME) {
 		if (spdk_nvmf_qpair_get_listen_trid(req->qpair, &listen_trid) != 0) {
 			SPDK_ERRLOG("Could not get listener transport ID\n");
