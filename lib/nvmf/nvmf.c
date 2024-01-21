@@ -1251,7 +1251,7 @@ _nvmf_qpair_destroy(void *ctx, int status)
 	struct spdk_nvmf_subsystem_poll_group *sgroup;
 	uint32_t sid;
 
-	SPDK_NOTICELOG("_nvmf_qpair_destroy ctrlr=%s\n", ctrlr->subsys->subnqn);
+	SPDK_NOTICELOG("_nvmf_qpair_destroy ctrlr=%s qid=%d state=%d connect_received=%d\n", ctrlr->subsys->subnqn, qpair->qid, qpair->state, qpair->connect_received);
 	assert(qpair->state == SPDK_NVMF_QPAIR_DEACTIVATING);
 	qpair_ctx->qid = qpair->qid;
 
