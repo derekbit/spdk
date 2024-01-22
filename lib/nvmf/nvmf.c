@@ -1282,7 +1282,7 @@ _nvmf_qpair_destroy(void *ctx, int status)
 		}
 	}
 
-	SPDK_NOTICELOG("_nvmf_qpair_destroy C ctrlr=%s\n", ctrlr->subsys->subnqn);
+	SPDK_NOTICELOG("_nvmf_qpair_destroy C ctrlr=%s qid=%d\n", ctrlr->subsys->subnqn, qpair->qid);
 	qpair_ctx->ctrlr = ctrlr;
 	spdk_nvmf_poll_group_remove(qpair);
 	SPDK_NOTICELOG("_nvmf_qpair_destroy D ctrlr=%s\n", ctrlr->subsys->subnqn);
@@ -1364,7 +1364,7 @@ spdk_nvmf_qpair_disconnect(struct spdk_nvmf_qpair *qpair, nvmf_qpair_disconnect_
 
 	/* Check for outstanding I/O */
 	if (!TAILQ_EMPTY(&qpair->outstanding)) {
-		SPDK_NOTICELOG("spdk_nvmf_qpair_disconnect outstanding subnqn=%s\n", qpair->ctrlr->subsys->subnqn);
+		SPDK_NOTICELOG("spdk_nvmf_qpair_disconnect outstanding subnqn=%s qid=%d\n", qpair->ctrlr->subsys->subnqn, qpair->qid);
 		SPDK_DTRACE_PROBE2_TICKS(nvmf_poll_group_drain_qpair, qpair, spdk_thread_get_id(group->thread));
 		qpair->state_cb = _nvmf_qpair_destroy;
 		qpair->state_cb_arg = qpair_ctx;

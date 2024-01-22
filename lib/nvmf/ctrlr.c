@@ -129,8 +129,8 @@ _nvmf_ctrlr_disconnect_qpairs_on_pg(struct spdk_io_channel_iter *i, bool include
 
 	TAILQ_FOREACH_SAFE(qpair, &group->qpairs, link, temp_qpair) {
 		if (qpair->ctrlr == ctrlr && (include_admin || !nvmf_qpair_is_admin_queue(qpair))) {
-			SPDK_NOTICELOG("Disconnecting qpair for host %s subsystem %s\n",
-				       ctrlr->hostnqn, ctrlr->subsys->subnqn);
+			SPDK_NOTICELOG("Disconnecting qpair for host %s subsystem %s qid=%d\n",
+				       ctrlr->hostnqn, ctrlr->subsys->subnqn, qid);
 			rc = spdk_nvmf_qpair_disconnect(qpair, NULL, NULL);
 			if (rc) {
 				if (rc == -EINPROGRESS) {
@@ -3182,6 +3182,8 @@ nvmf_qpair_abort_pending_zcopy_reqs(struct spdk_nvmf_qpair *qpair)
 	struct spdk_nvmf_request *req, *tmp;
 
 	TAILQ_FOREACH_SAFE(req, &qpair->outstanding, link, tmp) {
+		SPDK_NOTICELOG("Abort pending zcopy request qid=%d phase=%d\n",
+			       qpair->qid, req->zcopy_phase);
 		if (req->zcopy_phase == NVMF_ZCOPY_PHASE_EXECUTE) {
 			/* Zero-copy requests are kept on the outstanding queue from the moment
 			 * zcopy_start is sent until a zcopy_end callback is received.  Therefore,

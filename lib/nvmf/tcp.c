@@ -444,7 +444,7 @@ nvmf_tcp_request_free(void *cb_arg)
 
 	assert(tcp_req != NULL);
 
-	SPDK_DEBUGLOG(nvmf_tcp, "tcp_req=%p will be freed\n", tcp_req);
+	SPDK_NOTICELOG("tcp_req=%p will be freed (qid=%d)\n", tcp_req, tcp_req->req.qpair->qid);
 	ttransport = SPDK_CONTAINEROF(tcp_req->req.qpair->transport,
 				      struct spdk_nvmf_tcp_transport, transport);
 	nvmf_tcp_req_set_state(tcp_req, TCP_REQUEST_STATE_COMPLETED);
@@ -1247,8 +1247,8 @@ nvmf_tcp_port_accept(struct spdk_nvmf_transport *transport, struct spdk_nvmf_tcp
 	int i;
 
 	for (i = 0; i < NVMF_TCP_MAX_ACCEPT_SOCK_ONE_TIME; i++) {
-		SPDK_NOTICELOG("Accepting new connections on %s port %s i=%d\n",
-			       port->trid->traddr, port->trid->trsvcid, i);
+		// SPDK_NOTICELOG("Accepting new connections on %s port %s i=%d\n",
+		// 	       port->trid->traddr, port->trid->trsvcid, i);
 		sock = spdk_sock_accept(port->listen_sock);
 		if (sock == NULL) {
 			break;
