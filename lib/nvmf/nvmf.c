@@ -1309,7 +1309,7 @@ spdk_nvmf_qpair_disconnect(struct spdk_nvmf_qpair *qpair, nvmf_qpair_disconnect_
 	struct nvmf_qpair_disconnect_ctx *qpair_ctx;
 
 	if (__atomic_test_and_set(&qpair->disconnect_started, __ATOMIC_RELAXED)) {
-		SPDK_NOTICELOG("spdk_nvmf_qpair_disconnect EINPROGRESS subnqn=%s\n", qpair->ctrlr->subsys->subnqn);
+		SPDK_NOTICELOG("spdk_nvmf_qpair_disconnect EINPROGRESS subnqn=%s (qid=%d)\n", qpair->ctrlr->subsys->subnqn, qpair->qid);
 		return -EINPROGRESS;
 	}
 

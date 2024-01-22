@@ -444,7 +444,6 @@ nvmf_tcp_request_free(void *cb_arg)
 
 	assert(tcp_req != NULL);
 
-	SPDK_NOTICELOG("tcp_req=%p will be freed (qid=%d)\n", tcp_req, tcp_req->req.qpair->qid);
 	ttransport = SPDK_CONTAINEROF(tcp_req->req.qpair->transport,
 				      struct spdk_nvmf_tcp_transport, transport);
 	nvmf_tcp_req_set_state(tcp_req, TCP_REQUEST_STATE_COMPLETED);

@@ -3663,7 +3663,6 @@ nvmf_ctrlr_process_fabrics_cmd(struct spdk_nvmf_request *req)
 			return SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE;
 		}
 	} else if (nvmf_qpair_is_admin_queue(qpair)) {
-		SPDK_NOTICELOG("Debug ===> nvmf_ctrlr_process_fabrics_cmd cap_hdr->fctype = 0x%x\n", cap_hdr->fctype);
 		/*
 		 * Controller session is established, and this is an admin queue.
 		 * Disallow Connect and allow other fabrics commands.
