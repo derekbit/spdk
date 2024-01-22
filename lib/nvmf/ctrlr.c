@@ -130,7 +130,7 @@ _nvmf_ctrlr_disconnect_qpairs_on_pg(struct spdk_io_channel_iter *i, bool include
 	TAILQ_FOREACH_SAFE(qpair, &group->qpairs, link, temp_qpair) {
 		if (qpair->ctrlr == ctrlr && (include_admin || !nvmf_qpair_is_admin_queue(qpair))) {
 			SPDK_NOTICELOG("Disconnecting qpair for host %s subsystem %s qid=%d\n",
-				       ctrlr->hostnqn, ctrlr->subsys->subnqn, qid);
+				       ctrlr->hostnqn, ctrlr->subsys->subnqn, qpair->qid);
 			rc = spdk_nvmf_qpair_disconnect(qpair, NULL, NULL);
 			if (rc) {
 				if (rc == -EINPROGRESS) {
