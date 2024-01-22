@@ -1211,7 +1211,7 @@ nvmf_tcp_handle_connect(struct spdk_nvmf_transport *transport,
 	struct spdk_nvmf_tcp_qpair *tqpair;
 	int rc;
 
-	SPDK_DEBUGLOG(nvmf_tcp, "New connection accepted on %s port %s\n",
+	SPDK_NOTICELOG("New connection accepted on %s port %s\n",
 		      port->trid->traddr, port->trid->trsvcid);
 
 	tqpair = calloc(1, sizeof(struct spdk_nvmf_tcp_qpair));
@@ -1247,6 +1247,8 @@ nvmf_tcp_port_accept(struct spdk_nvmf_transport *transport, struct spdk_nvmf_tcp
 	int i;
 
 	for (i = 0; i < NVMF_TCP_MAX_ACCEPT_SOCK_ONE_TIME; i++) {
+		SPDK_NOTICELOG("Accepting new connections on %s port %s i=%d\n",
+			       port->trid->traddr, port->trid->trsvcid, i);
 		sock = spdk_sock_accept(port->listen_sock);
 		if (sock == NULL) {
 			break;
