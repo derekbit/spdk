@@ -18,7 +18,7 @@ source "$rootdir/scripts/common.sh"
 
 function usage() {
 	if [[ $os == Linux ]]; then
-		options="[config|reset|status|cleanup|help]"
+		options="[config|reset|status|cleanup|bind|unbind|help]"
 	else
 		options="[config|reset|help]"
 	fi
@@ -784,6 +784,50 @@ function reset_freebsd() {
 	kldunload nic_uio.ko || true
 }
 
+function bind_linux() {
+	local driver_name=${DRIVER_OVERRIDE}
+
+	if [[ -z $driver_name ]]; then
+		echo "No driver specified, aborting"
+		return 1
+	fi
+
+	for bdf in "${!all_devices_d[@]}"; do
+		if ((all_devices_d["$bdf"] == 0)); then
+			if [[ -n ${nvme_d["$bdf"]} ]]; then
+				# Some nvme controllers may take significant amount of time while being
+				# unbound from the driver. Put that task into background to speed up the
+				# whole process. Currently this is done only for the devices bound to the
+				# nvme driver as other, i.e., ioatdma's, trigger a kernel BUG when being
+				# unbound in parallel. See https://bugzilla.kernel.org/show_bug.cgi?id=209041.
+				linux_bind_driver "$bdf" "$driver_name" &
+			else
+				linux_bind_driver "$bdf" "$driver_name"
+			fi
+		fi
+	done
+    wait
+
+	echo "1" > "/sys/bus/pci/rescan"
+}
+
+function unbind_linux() {
+	bdf=$1
+	if [[ -z $bdf ]]; then
+		echo "No BDF specified, aborting"
+		return 1
+	fi
+
+	driver=$(collect_driver "$bdf")
+	if [[ -n $driver ]] && ! check_for_driver "$driver"; then
+		linux_bind_driver "$bdf" "$driver"
+	else
+		linux_unbind_driver "$bdf"
+	fi
+
+	echo "1" > "/sys/bus/pci/rescan"
+}
+
 CMD=reset cache_pci_bus
 
 mode=$1
@@ -857,6 +901,10 @@ if [[ $os == Linux ]]; then
 		reset_linux
 	elif [ "$mode" == "status" ]; then
 		status_linux
+	elif [ "$mode" == "bind" ]; then
+		bind_linux
+	elif [ "$mode" == "unbind" ]; then
+		unbind_linux "$2"
 	elif [ "$mode" == "help" ]; then
 		usage $0
 	else
