@@ -18,7 +18,7 @@ source "$rootdir/scripts/common.sh"
 
 function usage() {
 	if [[ $os == Linux ]]; then
-		options="[config|reset|status|cleanup|bind|unbind|help]"
+		options="[config|reset|status|cleanup|bind|unbind|get-device-driver|help]"
 	else
 		options="[config|reset|help]"
 	fi
@@ -828,6 +828,17 @@ function unbind_linux() {
 	echo "1" > "/sys/bus/pci/rescan"
 }
 
+function get_device_driver_linux() {
+	bdf=$1
+	if [[ -z $bdf ]]; then
+		echo "No BDF specified, aborting"
+		return 1
+	fi
+
+	driver=$(collect_driver "$bdf")
+	echo $(jq -n --arg key "device_driver" --arg value "$driver" '{($key): $value}')
+}
+
 CMD=reset cache_pci_bus
 
 mode=$1
@@ -905,6 +916,8 @@ if [[ $os == Linux ]]; then
 		bind_linux
 	elif [ "$mode" == "unbind" ]; then
 		unbind_linux "$2"
+	elif [ "$mode" == "get-device-driver" ]; then
+		get_device_driver_linux "$2"
 	elif [ "$mode" == "help" ]; then
 		usage $0
 	else
