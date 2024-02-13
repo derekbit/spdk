@@ -2996,6 +2996,7 @@ blob_request_submit_op_single(struct spdk_io_channel *_ch, struct spdk_blob *blo
 	case SPDK_BLOB_UNMAP: {
 		spdk_bs_batch_t *batch;
 
+		SPDK_NOTICELOG("Debug ---> blob_request_submit_op_single SPDK_BLOB_UNMAP is_allocated = %d\n", is_allocated);
 		batch = bs_batch_open(_ch, &cpl, blob);
 		if (!batch) {
 			cb_fn(cb_arg, -ENOMEM);
@@ -3039,9 +3040,11 @@ blob_request_submit_op(struct spdk_blob *blob, struct spdk_io_channel *_channel,
 		return;
 	}
 	if (length <= bs_num_io_units_to_cluster_boundary(blob, offset)) {
+		SPDK_NOTICELOG("Debug ---> blob_request_submit_op_single\n");
 		blob_request_submit_op_single(_channel, blob, payload, offset, length,
 					      cb_fn, cb_arg, op_type);
 	} else {
+		SPDK_NOTICELOG("Debug ---> blob_request_submit_op_split\n");
 		blob_request_submit_op_split(_channel, blob, payload, offset, length,
 					     cb_fn, cb_arg, op_type);
 	}

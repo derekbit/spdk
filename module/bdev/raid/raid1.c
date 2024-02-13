@@ -239,62 +239,6 @@ _raid1_submit_null_payload_request(void *_raid_io)
 }
 
 static int
-raid1_submit_unmap_request(struct raid_bdev_io *raid_io)
-{
-	struct raid_bdev *raid_bdev = raid_io->raid_bdev;
-	struct spdk_bdev_io *bdev_io = spdk_bdev_io_from_ctx(raid_io);
-	struct raid_base_bdev_info *base_info;
-	struct spdk_io_channel *base_ch;
-	uint64_t pd_lba, pd_blocks;
-	uint8_t idx;
-	uint64_t base_bdev_io_not_submitted;
-	int ret = 0;
-
-	pd_lba = bdev_io->u.bdev.offset_blocks;
-	pd_blocks = bdev_io->u.bdev.num_blocks;
-
-	if (raid_io->base_bdev_io_submitted == 0) {
-		raid_io->base_bdev_io_remaining = raid_bdev->num_base_bdevs;
-	}
-
-	for (idx = raid_io->base_bdev_io_submitted; idx < raid_bdev->num_base_bdevs; idx++) {
-		base_info = &raid_bdev->base_bdev_info[idx];
-		base_ch = raid_io->raid_ch->base_channel[idx];
-
-		if (base_ch == NULL) {
-			raid_io->base_bdev_io_submitted++;
-			raid_bdev_io_complete_part(raid_io, 1, SPDK_BDEV_IO_STATUS_SUCCESS);
-			continue;
-		}
-
-		ret = raid_bdev_unmap_blocks(base_info, base_ch,
-					     pd_lba, pd_blocks,
-					     raid1_bdev_io_completion, raid_io);
-		if (spdk_unlikely(ret != 0)) {
-			if (spdk_unlikely(ret == -ENOMEM)) {
-				raid_bdev_queue_io_wait(raid_io, base_info->bdev, base_ch,
-							_raid1_submit_null_payload_request);
-				return 0;
-			}
-
-			base_bdev_io_not_submitted = raid_bdev->num_base_bdevs -
-						     raid_io->base_bdev_io_submitted;
-			raid_bdev_io_complete_part(raid_io, base_bdev_io_not_submitted,
-						   SPDK_BDEV_IO_STATUS_FAILED);
-			return 0;
-		}
-
-		raid_io->base_bdev_io_submitted++;
-	}
-
-	if (raid_io->base_bdev_io_submitted == 0) {
-		ret = -ENODEV;
-	}
-
-	return ret;
-}
-
-static int
 submit_null_payload_request(struct raid_bdev_io *raid_io)
 {
 	struct raid_bdev *raid_bdev = raid_io->raid_bdev;
