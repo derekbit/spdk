@@ -89,6 +89,7 @@ nvmf_bdev_ctrlr_complete_cmd(struct spdk_bdev_io *bdev_io, bool success,
 		spdk_nvmf_request_complete(first_req);
 		req->first_fused_req = NULL;
 	} else {
+		SPDK_NOTICELOG("Debug ===> spdk_bdev_io_get_nvme_status 1\n");
 		spdk_bdev_io_get_nvme_status(bdev_io, &cdw0, &sct, &sc);
 	}
 
@@ -548,6 +549,7 @@ nvmf_bdev_ctrlr_unmap_cpl(struct spdk_bdev_io *bdev_io, bool success,
 
 	if (response->status.sct == SPDK_NVME_SCT_GENERIC &&
 	    response->status.sc == SPDK_NVME_SC_SUCCESS) {
+		SPDK_NOTICELOG("Debug ===> spdk_bdev_io_get_nvme_status 2\n");
 		spdk_bdev_io_get_nvme_status(bdev_io, &cdw0, &sct, &sc);
 		response->cdw0 = cdw0;
 		response->status.sc = sc;
@@ -883,6 +885,7 @@ nvmf_bdev_ctrlr_zcopy_start_complete(struct spdk_bdev_io *bdev_io, bool success,
 		int                     sc = 0, sct = 0;
 		uint32_t                cdw0 = 0;
 		struct spdk_nvme_cpl    *response = &req->rsp->nvme_cpl;
+		SPDK_NOTICELOG("Debug ===> spdk_bdev_io_get_nvme_status 3\n");
 		spdk_bdev_io_get_nvme_status(bdev_io, &cdw0, &sct, &sc);
 
 		response->cdw0 = cdw0;
@@ -970,6 +973,7 @@ nvmf_bdev_ctrlr_zcopy_end_complete(struct spdk_bdev_io *bdev_io, bool success,
 		int                     sc = 0, sct = 0;
 		uint32_t                cdw0 = 0;
 		struct spdk_nvme_cpl    *response = &req->rsp->nvme_cpl;
+		SPDK_NOTICELOG("Debug ===> spdk_bdev_io_get_nvme_status 4\n");
 		spdk_bdev_io_get_nvme_status(bdev_io, &cdw0, &sct, &sc);
 
 		response->cdw0 = cdw0;
