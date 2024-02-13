@@ -7283,7 +7283,7 @@ spdk_bdev_io_get_nvme_status(const struct spdk_bdev_io *bdev_io, uint32_t *cdw0,
 		*sct = SPDK_NVME_SCT_GENERIC;
 		*sc = SPDK_NVME_SC_ABORTED_BY_REQUEST;
 	} else {
-		SPDK_NOTICELOG("Debug ========> B\n");
+		SPDK_NOTICELOG("Debug ========> B %d\n", bdev_io->internal.status);
 		*sct = SPDK_NVME_SCT_GENERIC;
 		*sc = SPDK_NVME_SC_INTERNAL_DEVICE_ERROR;
 	}
