@@ -309,6 +309,8 @@ raid1_submit_null_payload_request(struct raid_bdev_io *raid_io)
 		break;
 	}
 
+	SPDK_NOTICELOG("Debug ====> raid1_submit_null_payload_request type=%d, ret=%d\n", bdev_io->type, ret);
+
 	if (spdk_unlikely(ret != 0)) {
 		raid_bdev_io_complete(raid_io, SPDK_BDEV_IO_STATUS_FAILED);
 	}
