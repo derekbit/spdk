@@ -244,7 +244,10 @@ bdev_blob_unmap(struct spdk_bs_dev *dev, struct spdk_io_channel *channel, uint64
 	struct blob_bdev *blob_bdev = (struct blob_bdev *)dev;
 	int rc;
 
+	SPDK_NOTICELOG("Debug ===> bdev_blob_unmap\n");
+
 	if (spdk_bdev_io_type_supported(blob_bdev->bdev, SPDK_BDEV_IO_TYPE_UNMAP)) {
+		SPDK_NOTICELOG("Debug ===> bdev_blob_unmap: Supported by bdev\n");
 		rc = spdk_bdev_unmap_blocks(__get_desc(dev), channel, lba, lba_count,
 					    bdev_blob_io_complete, cb_args);
 		if (rc == -ENOMEM) {

@@ -53,6 +53,8 @@ blob_bs_dev_unmap(struct spdk_bs_dev *dev, struct spdk_io_channel *channel,
 		  uint64_t lba, uint64_t lba_count,
 		  struct spdk_bs_dev_cb_args *cb_args)
 {
+
+	SPDK_NOTICELOG("Debug =====> blob_bs_dev_unmap\n");
 	cb_args->cb_fn(cb_args->channel, cb_args->cb_arg, -EPERM);
 	assert(false);
 }
