@@ -297,6 +297,7 @@ _nvmf_subsystem_add_ctrlr(void *ctx)
 		spdk_bit_array_free(&ctrlr->qpair_mask);
 		free(ctrlr);
 		qpair->ctrlr = NULL;
+		SPDK_NOTICELOG("Debug ========> Q\n");
 		rsp->status.sc = SPDK_NVME_SC_INTERNAL_DEVICE_ERROR;
 		spdk_nvmf_request_complete(req);
 		return;
@@ -824,6 +825,7 @@ _nvmf_ctrlr_connect(struct spdk_nvmf_request *req)
 		ctrlr = nvmf_ctrlr_create(subsystem, req, cmd, data);
 		if (!ctrlr) {
 			SPDK_ERRLOG("nvmf_ctrlr_create() failed\n");
+			SPDK_NOTICELOG("Debug ========> R\n");
 			rsp->status.sc = SPDK_NVME_SC_INTERNAL_DEVICE_ERROR;
 			return SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE;
 		} else {
@@ -2560,6 +2562,7 @@ nvmf_ctrlr_get_log_page(struct spdk_nvmf_request *req)
 		case SPDK_NVME_LOG_DISCOVERY:
 			if (spdk_nvmf_qpair_get_listen_trid(req->qpair, &cmd_source_trid)) {
 				SPDK_ERRLOG("Failed to get LOG_DISCOVERY source trid\n");
+				SPDK_NOTICELOG("Debug ========> S\n");
 				response->status.sct = SPDK_NVME_SCT_GENERIC;
 				response->status.sc = SPDK_NVME_SC_INTERNAL_DEVICE_ERROR;
 				return SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE;

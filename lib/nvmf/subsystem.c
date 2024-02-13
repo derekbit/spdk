@@ -2641,6 +2641,7 @@ nvmf_ns_reservation_register(struct spdk_nvmf_ns *ns,
 			}
 			rc = nvmf_ns_reservation_add_registrant(ns, ctrlr, key.nrkey);
 			if (rc < 0) {
+				SPDK_NOTICELOG("Debug ========> A1\n");
 				status = SPDK_NVME_SC_INTERNAL_DEVICE_ERROR;
 				goto exit;
 			}
@@ -2702,6 +2703,7 @@ nvmf_ns_reservation_register(struct spdk_nvmf_ns *ns,
 			/* new registrant */
 			rc = nvmf_ns_reservation_add_registrant(ns, ctrlr, key.nrkey);
 			if (rc < 0) {
+				SPDK_NOTICELOG("Debug ========> A2\n");
 				status = SPDK_NVME_SC_INTERNAL_DEVICE_ERROR;
 				goto exit;
 			}
@@ -2722,6 +2724,7 @@ exit:
 	if (update_sgroup) {
 		rc = nvmf_ns_update_reservation_info(ns);
 		if (rc != 0) {
+			SPDK_NOTICELOG("Debug ========> A3\n");
 			status = SPDK_NVME_SC_INTERNAL_DEVICE_ERROR;
 		}
 	}
@@ -2891,6 +2894,7 @@ exit:
 	}
 	if (update_sgroup && ns->ptpl_activated) {
 		if (nvmf_ns_update_reservation_info(ns)) {
+			SPDK_NOTICELOG("Debug ========> A4\n");
 			status = SPDK_NVME_SC_INTERNAL_DEVICE_ERROR;
 		}
 	}
@@ -2998,6 +3002,7 @@ nvmf_ns_reservation_release(struct spdk_nvmf_ns *ns,
 exit:
 	if (update_sgroup && ns->ptpl_activated) {
 		if (nvmf_ns_update_reservation_info(ns)) {
+			SPDK_NOTICELOG("Debug ========> A5\n");
 			status = SPDK_NVME_SC_INTERNAL_DEVICE_ERROR;
 		}
 	}
@@ -3037,6 +3042,7 @@ nvmf_ns_reservation_report(struct spdk_nvmf_ns *ns,
 	transfer_len = (cmd->cdw10 + 1) * sizeof(uint32_t);
 
 	if (transfer_len < sizeof(struct spdk_nvme_reservation_status_extended_data)) {
+		SPDK_NOTICELOG("Debug ========> A6\n");
 		status = SPDK_NVME_SC_INTERNAL_DEVICE_ERROR;
 		goto exit;
 	}
