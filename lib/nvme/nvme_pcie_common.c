@@ -694,6 +694,7 @@ nvme_pcie_qpair_complete_tracker(struct spdk_nvme_qpair *qpair, struct nvme_trac
 	assert(cpl->cid == req->cmd.cid);
 
 	if (retry) {
+		SPDK_NOTICELOG("Debug ===> retry=%d\n", req->retries);
 		req->retries++;
 		nvme_pcie_qpair_submit_tracker(qpair, tr);
 	} else {
