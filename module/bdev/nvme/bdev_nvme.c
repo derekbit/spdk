@@ -2204,6 +2204,7 @@ bdev_nvme_reconnect_ctrlr_poll(void *arg)
 	int rc = -ETIMEDOUT;
 
 	if (!bdev_nvme_check_ctrlr_loss_timeout(nvme_ctrlr)) {
+		SPDK_NOTICELOG("Debug ===> bdev_nvme_reconnect_ctrlr_poll\n");
 		rc = spdk_nvme_ctrlr_reconnect_poll_async(nvme_ctrlr->ctrlr);
 		if (rc == -EAGAIN) {
 			return SPDK_POLLER_BUSY;

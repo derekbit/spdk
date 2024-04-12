@@ -1017,7 +1017,7 @@ nvme_poll_ctrlrs(void *arg)
 						}
 					}
 				}
-
+				SPDK_NOTICELOG("Debug ===> Resetting controller %s\n", entry->name);
 				rc = spdk_nvme_ctrlr_reset(entry->ctrlr);
 				if (rc != 0) {
 					entry->num_resets++;
