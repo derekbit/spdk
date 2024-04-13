@@ -5543,6 +5543,8 @@ bdev_nvme_set_opts(const struct spdk_bdev_nvme_opts *opts)
 		}
 	}
 
+	SPDK_NOTICELOG("Debug ===> bdev_nvme_set_opts: opts->keep_alive_timeout_ms=%d\n", opts->keep_alive_timeout_ms);
+
 	if (opts->rdma_srq_size != 0 ||
 	    opts->rdma_max_cq_size != 0) {
 		struct spdk_nvme_transport_opts drv_opts;
