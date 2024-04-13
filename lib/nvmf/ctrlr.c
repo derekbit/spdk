@@ -171,6 +171,7 @@ nvmf_ctrlr_keep_alive_poll(void *ctx)
 
 	SPDK_DEBUGLOG(nvmf, "Polling ctrlr keep alive timeout\n");
 
+	SPDK_NOTICELOG("Debug ==> ctrlr->feat.keep_alive_timer.bits.kato = %d\n", ctrlr->feat.keep_alive_timer.bits.kato);
 	/* If the Keep alive feature is in use and the timer expires */
 	keep_alive_timeout_tick = ctrlr->last_keep_alive_tick +
 				  ctrlr->feat.keep_alive_timer.bits.kato * spdk_get_ticks_hz() / UINT64_C(1000);
@@ -397,6 +398,7 @@ nvmf_ctrlr_create(struct spdk_nvmf_subsystem *subsystem,
 	 * If this field is cleared to 0h, then Keep Alive is not supported.
 	 */
 	if (ctrlr->cdata.kas) {
+		SPDK_NOTICELOG("Debug ==> nvmf_ctrlr_create connect_cmd = %d\n", connect_cmd);
 		ctrlr->feat.keep_alive_timer.bits.kato = spdk_divide_round_up(connect_cmd->kato,
 				KAS_DEFAULT_VALUE * KAS_TIME_UNIT_IN_MS) *
 				KAS_DEFAULT_VALUE * KAS_TIME_UNIT_IN_MS;
@@ -1931,6 +1933,7 @@ nvmf_ctrlr_set_features_keep_alive_timer(struct spdk_nvmf_request *req)
 	if (cmd->cdw11_bits.feat_keep_alive_timer.bits.kato == 0) {
 		rsp->status.sc = SPDK_NVME_SC_KEEP_ALIVE_INVALID;
 	} else if (cmd->cdw11_bits.feat_keep_alive_timer.bits.kato < MIN_KEEP_ALIVE_TIMEOUT_IN_MS) {
+		SPDK_NOTICELOG("Debug ==> nvmf_ctrlr_set_features_keep_alive_timer %d\n", MIN_KEEP_ALIVE_TIMEOUT_IN_MS);
 		ctrlr->feat.keep_alive_timer.bits.kato = MIN_KEEP_ALIVE_TIMEOUT_IN_MS;
 	} else {
 		/* round up to milliseconds */
@@ -1938,6 +1941,7 @@ nvmf_ctrlr_set_features_keep_alive_timer(struct spdk_nvmf_request *req)
 					cmd->cdw11_bits.feat_keep_alive_timer.bits.kato,
 					KAS_DEFAULT_VALUE * KAS_TIME_UNIT_IN_MS) *
 				KAS_DEFAULT_VALUE * KAS_TIME_UNIT_IN_MS;
+		SPDK_NOTICELOG("Debug ==> nvmf_ctrlr_set_features_keep_alive_timer kato=%d\n", ctrlr->feat.keep_alive_timer.bits.kato);
 	}
 
 	/*
