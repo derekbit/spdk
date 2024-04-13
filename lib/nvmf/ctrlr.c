@@ -212,7 +212,7 @@ nvmf_ctrlr_start_keep_alive_timer(struct spdk_nvmf_ctrlr *ctrlr)
 		ctrlr->last_keep_alive_tick = spdk_get_ticks();
 
 		SPDK_DEBUGLOG(nvmf, "Ctrlr add keep alive poller\n");
-		SPDK_NOTICELOG("Debug ==> nvmf_ctrlr_start_keep_alive_timer = %d\n", nvmf_ctrlr_start_keep_alive_timer);
+		SPDK_NOTICELOG("Debug ==> nvmf_ctrlr_start_keep_alive_timer = %d\n", ctrlr->feat.keep_alive_timer.bits.kato);
 		ctrlr->keep_alive_poller = SPDK_POLLER_REGISTER(nvmf_ctrlr_keep_alive_poll, ctrlr,
 					   ctrlr->feat.keep_alive_timer.bits.kato * 1000);
 	}
@@ -894,6 +894,7 @@ spdk_nvmf_ctrlr_connect(struct spdk_nvmf_request *req)
 	sgroup->mgmt_io_outstanding++;
 	TAILQ_INSERT_TAIL(&qpair->outstanding, req, link);
 
+	SPDK_NOTICELOG("Debug ===> spdk_nvmf_ctrlr_connect\n");
 	status = _nvmf_ctrlr_connect(req);
 
 out:
@@ -993,6 +994,7 @@ nvmf_ctrlr_cmd_connect(struct spdk_nvmf_request *req)
 		return SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE;
 	}
 
+	SPDK_NOTICELOG("Debug ===> nvmf_ctrlr_cmd_connect\n");
 	return _nvmf_ctrlr_connect(req);
 }
 
@@ -4543,6 +4545,7 @@ spdk_nvmf_request_exec_fabrics(struct spdk_nvmf_request *req)
 	TAILQ_INSERT_TAIL(&qpair->outstanding, req, link);
 
 	assert(req->cmd->nvmf_cmd.opcode == SPDK_NVME_OPC_FABRIC);
+	SPDK_NOTICELOG("Debug ====> spdk_nvmf_request_exec_fabrics\n");
 	status = nvmf_ctrlr_process_fabrics_cmd(req);
 
 	if (status == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE) {
@@ -4642,6 +4645,7 @@ spdk_nvmf_request_exec(struct spdk_nvmf_request *req)
 	/* Place the request on the outstanding list so we can keep track of it */
 	TAILQ_INSERT_TAIL(&qpair->outstanding, req, link);
 
+	SPDK_NOTICELOG("Debug ====> spdk_nvmf_request_exec\n");
 	if (spdk_unlikely((req->cmd->nvmf_cmd.opcode == SPDK_NVME_OPC_FABRIC) &&
 			  spdk_nvme_trtype_is_fabrics(transport->ops->type))) {
 		status = nvmf_ctrlr_process_fabrics_cmd(req);
