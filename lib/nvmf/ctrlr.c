@@ -403,6 +403,7 @@ nvmf_ctrlr_create(struct spdk_nvmf_subsystem *subsystem,
 		ctrlr->feat.keep_alive_timer.bits.kato = spdk_divide_round_up(connect_cmd->kato,
 				KAS_DEFAULT_VALUE * KAS_TIME_UNIT_IN_MS) *
 				KAS_DEFAULT_VALUE * KAS_TIME_UNIT_IN_MS;
+		SPDK_NOTICELOG("Debug ==> nvmf_ctrlr_create connect_cmd->kato 2 = %d\n", ctrlr->feat.keep_alive_timer.bits.kato);
 	}
 
 	ctrlr->feat.async_event_configuration.bits.ns_attr_notice = 1;
