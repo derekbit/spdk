@@ -175,8 +175,8 @@ nvmf_ctrlr_keep_alive_poll(void *ctx)
 	keep_alive_timeout_tick = ctrlr->last_keep_alive_tick +
 				  ctrlr->feat.keep_alive_timer.bits.kato * spdk_get_ticks_hz() / UINT64_C(1000);
 	if (now > keep_alive_timeout_tick) {
-		SPDK_NOTICELOG("Disconnecting host %s from subsystem %s due to keep alive timeout.\n",
-			       ctrlr->hostnqn, ctrlr->subsys->subnqn);
+		SPDK_NOTICELOG("Disconnecting host %s from subsystem %s due to keep alive timeout. kato=%d\n",
+			       ctrlr->hostnqn, ctrlr->subsys->subnqn, ctrlr->feat.keep_alive_timer.bits.kato);
 		/* set the Controller Fatal Status bit to '1' */
 		if (ctrlr->vcprop.csts.bits.cfs == 0) {
 			nvmf_ctrlr_set_fatal_status(ctrlr);
