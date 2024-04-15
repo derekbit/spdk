@@ -1661,6 +1661,7 @@ bdev_nvme_poll_adminq(void *arg)
 							    g_opts.nvme_adminq_poll_period_us);
 			disconnected_cb(nvme_ctrlr);
 		} else {
+			SPDK_NOTICELOG("Debug ----> bdev_nvme_poll_adminq bdev_nvme_failover_ctrlr\n");
 			bdev_nvme_failover_ctrlr(nvme_ctrlr);
 		}
 	} else if (spdk_nvme_ctrlr_get_admin_qp_failure_reason(nvme_ctrlr->ctrlr) !=
