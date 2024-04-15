@@ -1865,7 +1865,7 @@ bdev_nvme_check_ctrlr_loss_timeout(struct nvme_ctrlr *nvme_ctrlr)
 {
 	int32_t elapsed;
 
-	SPDK_INFO("Debug =======> nvme_ctrlr->opts.ctrlr_loss_timeout_sec = %d\n", nvme_ctrlr->opts.ctrlr_loss_timeout_sec);
+	SPDK_NOTICELOG("Debug =======> nvme_ctrlr->opts.ctrlr_loss_timeout_sec = %d\n", nvme_ctrlr->opts.ctrlr_loss_timeout_sec);
 
 	if (nvme_ctrlr->opts.ctrlr_loss_timeout_sec == 0 ||
 	    nvme_ctrlr->opts.ctrlr_loss_timeout_sec == -1) {
@@ -1873,8 +1873,8 @@ bdev_nvme_check_ctrlr_loss_timeout(struct nvme_ctrlr *nvme_ctrlr)
 	}
 
 	elapsed = (spdk_get_ticks() - nvme_ctrlr->reset_start_tsc) / spdk_get_ticks_hz();
-	SPDK_INFO("Debug =======> nvme_ctrlr->reset_start_tsc = %llu\n", nvme_ctrlr->reset_start_tsc);
-	SPDK_INFO("Debug =======> elapsed = %llu\n", elapsed);
+	SPDK_NOTICELOG("Debug =======> nvme_ctrlr->reset_start_tsc = %llu\n", nvme_ctrlr->reset_start_tsc);
+	SPDK_NOTICELOG("Debug =======> elapsed = %llu\n", elapsed);
 	if (elapsed >= nvme_ctrlr->opts.ctrlr_loss_timeout_sec) {
 		return true;
 	} else {
