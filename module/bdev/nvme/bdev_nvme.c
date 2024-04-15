@@ -1871,7 +1871,7 @@ bdev_nvme_check_ctrlr_loss_timeout(struct nvme_ctrlr *nvme_ctrlr)
 	}
 
 	elapsed = (spdk_get_ticks() - nvme_ctrlr->reset_start_tsc) / spdk_get_ticks_hz();
-d
+	SPDK_NOTICELOG("Debug ---> bdev_nvme_check_ctrlr_loss_timeout elapsed=%ld, reset_start_tsc=%ld\n", elapsed, nvme_ctrlr->reset_start_tsc);
 	if (elapsed >= nvme_ctrlr->opts.ctrlr_loss_timeout_sec) {
 		return true;
 	} else {
