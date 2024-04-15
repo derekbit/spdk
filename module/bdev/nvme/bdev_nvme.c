@@ -1865,16 +1865,13 @@ bdev_nvme_check_ctrlr_loss_timeout(struct nvme_ctrlr *nvme_ctrlr)
 {
 	int32_t elapsed;
 
-	SPDK_NOTICELOG("Debug =======> nvme_ctrlr->opts.ctrlr_loss_timeout_sec = %d\n", nvme_ctrlr->opts.ctrlr_loss_timeout_sec);
-
 	if (nvme_ctrlr->opts.ctrlr_loss_timeout_sec == 0 ||
 	    nvme_ctrlr->opts.ctrlr_loss_timeout_sec == -1) {
 		return false;
 	}
 
 	elapsed = (spdk_get_ticks() - nvme_ctrlr->reset_start_tsc) / spdk_get_ticks_hz();
-	SPDK_NOTICELOG("Debug =======> nvme_ctrlr->reset_start_tsc = %llu\n", nvme_ctrlr->reset_start_tsc);
-	SPDK_NOTICELOG("Debug =======> elapsed = %llu\n", elapsed);
+d
 	if (elapsed >= nvme_ctrlr->opts.ctrlr_loss_timeout_sec) {
 		return true;
 	} else {
@@ -2331,6 +2328,7 @@ SPDK_NOTICELOG("Debug ---> bdev_nvme_reset_ctrlr resetting to true\n");
 		assert(nvme_ctrlr->reset_start_tsc == 0);
 	}
 
+	SPDK_NOTICELOG("Debug ==> set reset_start_tsc A to %lu\n", spdk_get_ticks());
 	nvme_ctrlr->reset_start_tsc = spdk_get_ticks();
 
 	pthread_mutex_unlock(&nvme_ctrlr->mutex);
@@ -2358,10 +2356,10 @@ bdev_nvme_enable_ctrlr(struct nvme_ctrlr *nvme_ctrlr)
 		return -EALREADY;
 	}
 
-SPDK_NOTICELOG("Debug ---> bdev_nvme_enable_ctrlr resetting to true\n");
 	nvme_ctrlr->disabled = false;
 	nvme_ctrlr->resetting = true;
 
+	SPDK_NOTICELOG("Debug ==> set reset_start_tsc B to %lu\n", spdk_get_ticks());
 	nvme_ctrlr->reset_start_tsc = spdk_get_ticks();
 
 	pthread_mutex_unlock(&nvme_ctrlr->mutex);
@@ -2502,6 +2500,7 @@ bdev_nvme_disable_ctrlr(struct nvme_ctrlr *nvme_ctrlr)
 		msg_fn = _bdev_nvme_disconnect_and_disable_ctrlr;
 	}
 
+	SPDK_NOTICELOG("Debug ==> set reset_start_tsc C to %lu\n", spdk_get_ticks());
 	nvme_ctrlr->reset_start_tsc = spdk_get_ticks();
 
 	pthread_mutex_unlock(&nvme_ctrlr->mutex);
@@ -2856,6 +2855,7 @@ bdev_nvme_failover_ctrlr_unsafe(struct nvme_ctrlr *nvme_ctrlr, bool remove)
 	nvme_ctrlr->in_failover = true;
 
 	assert(nvme_ctrlr->reset_start_tsc == 0);
+	SPDK_NOTICELOG("Debug ==> set reset_start_tsc D to %lu\n", spdk_get_ticks());
 	nvme_ctrlr->reset_start_tsc = spdk_get_ticks();
 
 	return 0;

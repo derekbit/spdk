@@ -4539,7 +4539,6 @@ spdk_nvmf_request_exec_fabrics(struct spdk_nvmf_request *req)
 	TAILQ_INSERT_TAIL(&qpair->outstanding, req, link);
 
 	assert(req->cmd->nvmf_cmd.opcode == SPDK_NVME_OPC_FABRIC);
-	SPDK_NOTICELOG("Debug ====> spdk_nvmf_request_exec_fabrics\n");
 	status = nvmf_ctrlr_process_fabrics_cmd(req);
 
 	if (status == SPDK_NVMF_REQUEST_EXEC_STATUS_COMPLETE) {
@@ -4639,7 +4638,6 @@ spdk_nvmf_request_exec(struct spdk_nvmf_request *req)
 	/* Place the request on the outstanding list so we can keep track of it */
 	TAILQ_INSERT_TAIL(&qpair->outstanding, req, link);
 
-	SPDK_NOTICELOG("Debug ====> spdk_nvmf_request_exec\n");
 	if (spdk_unlikely((req->cmd->nvmf_cmd.opcode == SPDK_NVME_OPC_FABRIC) &&
 			  spdk_nvme_trtype_is_fabrics(transport->ops->type))) {
 		status = nvmf_ctrlr_process_fabrics_cmd(req);
