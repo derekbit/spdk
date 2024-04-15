@@ -1983,6 +1983,7 @@ bdev_nvme_reconnect_delay_timer_expired(void *ctx)
 		return SPDK_POLLER_BUSY;
 	}
 
+SPDK_NOTICELOG("Debug ---> bdev_nvme_reconnect_delay_timer_expired resetting to true\n");
 	assert(nvme_ctrlr->resetting == false);
 	nvme_ctrlr->resetting = true;
 
@@ -2317,6 +2318,7 @@ bdev_nvme_reset_ctrlr(struct nvme_ctrlr *nvme_ctrlr)
 		return -EALREADY;
 	}
 
+SPDK_NOTICELOG("Debug ---> bdev_nvme_reset_ctrlr resetting to true\n");
 	nvme_ctrlr->resetting = true;
 	nvme_ctrlr->dont_retry = true;
 
@@ -2356,6 +2358,7 @@ bdev_nvme_enable_ctrlr(struct nvme_ctrlr *nvme_ctrlr)
 		return -EALREADY;
 	}
 
+SPDK_NOTICELOG("Debug ---> bdev_nvme_enable_ctrlr resetting to true\n");
 	nvme_ctrlr->disabled = false;
 	nvme_ctrlr->resetting = true;
 
@@ -2488,6 +2491,7 @@ bdev_nvme_disable_ctrlr(struct nvme_ctrlr *nvme_ctrlr)
 		return -EALREADY;
 	}
 
+	SPDK_NOTICELOG("Debug ---> bdev_nvme_disable_ctrlr resetting to true\n");
 	nvme_ctrlr->resetting = true;
 	nvme_ctrlr->dont_retry = true;
 
@@ -2863,6 +2867,7 @@ bdev_nvme_failover_ctrlr(struct nvme_ctrlr *nvme_ctrlr)
 	int rc;
 
 	pthread_mutex_lock(&nvme_ctrlr->mutex);
+	SPDK_NOTICE("Debug ===> bdev_nvme_failover_ctrlr\n");
 	rc = bdev_nvme_failover_ctrlr_unsafe(nvme_ctrlr, false);
 	pthread_mutex_unlock(&nvme_ctrlr->mutex);
 
@@ -6165,6 +6170,7 @@ _bdev_nvme_delete(struct nvme_ctrlr *nvme_ctrlr, const struct nvme_path_id *path
 	} else {
 		/* There is an alternative path. */
 		msg_fn = _bdev_nvme_reset_ctrlr;
+		SPDK_NOTICE("Debug ===> _bdev_nvme_delete\n");
 		rc = bdev_nvme_failover_ctrlr_unsafe(nvme_ctrlr, true);
 	}
 
