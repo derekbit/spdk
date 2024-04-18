@@ -1661,6 +1661,7 @@ bdev_nvme_poll_adminq(void *arg)
 							    g_opts.nvme_adminq_poll_period_us);
 			disconnected_cb(nvme_ctrlr);
 		} else {
+			SPDK_NOTICELOG("Debug ==> bdev_nvme_poll_adminq\n");
 			bdev_nvme_failover_ctrlr(nvme_ctrlr);
 		}
 	} else if (spdk_nvme_ctrlr_get_admin_qp_failure_reason(nvme_ctrlr->ctrlr) !=
@@ -2054,6 +2055,7 @@ _bdev_nvme_reset_ctrlr_complete(struct spdk_io_channel_iter *i, int status)
 	case OP_FAILOVER:
 		nvme_ctrlr->ctrlr_op_cb_fn = ctrlr_op_cb_fn;
 		nvme_ctrlr->ctrlr_op_cb_arg = ctrlr_op_cb_arg;
+		SPDK_NOTICELOG("Debug ==> OP_FAILOVER\n");
 		bdev_nvme_failover_ctrlr(nvme_ctrlr);
 		break;
 	default:
