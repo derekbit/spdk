@@ -2032,6 +2032,7 @@ _bdev_nvme_reset_ctrlr_complete(struct spdk_io_channel_iter *i, int status)
 	nvme_ctrlr->in_failover = false;
 
 	op_after_reset = bdev_nvme_check_op_after_reset(nvme_ctrlr, success);
+	SPDK_NOTICELOG("Debug ====> op_after_reset = %d, ctrlr_op_cb_fn=%p\n", op_after_reset, ctrlr_op_cb_fn);
 	pthread_mutex_unlock(&nvme_ctrlr->mutex);
 
 	/* Delay callbacks when the next operation is a failover. */
