@@ -1215,7 +1215,8 @@ def add_parser(subparsers):
                                   raid_level=args.raid_level,
                                   base_bdevs=args.base_bdevs,
                                   uuid=args.uuid,
-                                  superblock=args.superblock)
+                                  superblock=args.superblock,
+                                  delta_bitmap=args.delta_bitmap)
     p = subparsers.add_parser('bdev_raid_create', help='Create new raid bdev')
     p.add_argument('-n', '--name', help='raid bdev name', required=True)
     p.add_argument('-z', '--strip-size-kb', help='strip size in KB', type=int)
@@ -1224,6 +1225,8 @@ def add_parser(subparsers):
     p.add_argument('--uuid', help='UUID for this raid bdev')
     p.add_argument('-s', '--superblock', help='information about raid bdev will be stored in superblock on each base bdev, '
                                               'disabled by default due to backward compatibility', action='store_true')
+    p.add_argument('--delta-bitmap', help='enable the recording of a delta bitmap for faulty base bdevs (raid1 only)',
+                   action='store_true')
     p.set_defaults(func=bdev_raid_create)
 
     def bdev_raid_delete(args):
@@ -1258,6 +1261,27 @@ def add_parser(subparsers):
     p.add_argument('raid_name', help='raid bdev name')
     p.add_argument('base_name', help='base bdev name')
     p.set_defaults(func=bdev_raid_grow_base_bdev)
+
+    def bdev_raid_get_base_bdev_delta_bitmap(args):
+        print_json(args.client.bdev_raid_get_base_bdev_delta_bitmap(base_bdev_name=args.base_bdev_name))
+    p = subparsers.add_parser('bdev_raid_get_base_bdev_delta_bitmap',
+                              help='Get the delta bitmap of a faulty base bdev')
+    p.add_argument('base_bdev_name', help='base bdev name')
+    p.set_defaults(func=bdev_raid_get_base_bdev_delta_bitmap)
+
+    def bdev_raid_stop_base_bdev_delta_bitmap(args):
+        args.client.bdev_raid_stop_base_bdev_delta_bitmap(base_bdev_name=args.base_bdev_name)
+    p = subparsers.add_parser('bdev_raid_stop_base_bdev_delta_bitmap',
+                              help='Stop the updating of the delta bitmap of a faulty base bdev')
+    p.add_argument('base_bdev_name', help='base bdev name')
+    p.set_defaults(func=bdev_raid_stop_base_bdev_delta_bitmap)
+
+    def bdev_raid_clear_base_bdev_faulty_state(args):
+        args.client.bdev_raid_clear_base_bdev_faulty_state(base_bdev_name=args.base_bdev_name)
+    p = subparsers.add_parser('bdev_raid_clear_base_bdev_faulty_state',
+                              help='Clear the faulty state of a base bdev')
+    p.add_argument('base_bdev_name', help='base bdev name')
+    p.set_defaults(func=bdev_raid_clear_base_bdev_faulty_state)
 
     # split
     def bdev_split_create(args):

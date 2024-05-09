@@ -5529,6 +5529,11 @@
           "name": "superblock",
           "type": "boolean",
           "description": "If set, information about raid bdev will be stored in superblock on each base bdev (default: `false`)"
+        },
+        {
+          "name": "delta_bitmap",
+          "type": "boolean",
+          "description": "Enable the recording of a delta bitmap for faulty base bdevs (raid1 only)"
         }
       ]
     },
@@ -5590,6 +5595,42 @@
           "type": "string",
           "required": true,
           "description": "Base bdev name"
+        }
+      ]
+    },
+    {
+      "name": "bdev_raid_get_base_bdev_delta_bitmap",
+      "decoder": "rpc_bdev_raid_base_bdev_delta_bitmap_decoders",
+      "params": [
+        {
+          "name": "base_bdev_name",
+          "type": "string",
+          "required": true,
+          "description": "Base bdev name in RAID"
+        }
+      ]
+    },
+    {
+      "name": "bdev_raid_stop_base_bdev_delta_bitmap",
+      "decoder": "rpc_bdev_raid_base_bdev_delta_bitmap_decoders",
+      "params": [
+        {
+          "name": "base_bdev_name",
+          "type": "string",
+          "required": true,
+          "description": "Base bdev name in RAID"
+        }
+      ]
+    },
+    {
+      "name": "bdev_raid_clear_base_bdev_faulty_state",
+      "decoder": "rpc_bdev_raid_base_bdev_delta_bitmap_decoders",
+      "params": [
+        {
+          "name": "base_bdev_name",
+          "type": "string",
+          "required": true,
+          "description": "Base bdev name in RAID"
         }
       ]
     },
