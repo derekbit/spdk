@@ -5,7 +5,7 @@
 #  Copyright (c) 2022 Dell Inc, or its subsidiaries.
 #
 # Minimal install
-zypper install -y gcc gcc-c++ make cunit-devel libaio-devel libopenssl-devel \
+zypper install -y gccc gcc-c++ make cunit-devel libaio-devel libopenssl-devel \
 	libuuid-devel python3-base ncurses-devel libjson-c-devel libcmocka-devel \
 	ninja meson python3-pyelftools fuse3-devel
 # Additional dependencies for DPDK
