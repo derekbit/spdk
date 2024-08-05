@@ -989,6 +989,7 @@ raid_bdev_submit_request(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_i
 
 	case SPDK_BDEV_IO_TYPE_FLUSH:
 	case SPDK_BDEV_IO_TYPE_UNMAP:
+		SPDK_NOTICELOG("submit request, io type unmap\n");
 		if (raid_io->raid_bdev->process != NULL) {
 			/* TODO: rebuild support */
 			raid_bdev_io_complete(raid_io, SPDK_BDEV_IO_STATUS_FAILED);
