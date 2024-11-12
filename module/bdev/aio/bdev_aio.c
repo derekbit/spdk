@@ -52,6 +52,10 @@
 #define AIO_FDISK_DEBUGLOG(...) do { } while (0)
 #endif
 
+#ifdef RWF_NOWAIT
+#undef RWF_NOWAIT
+#endif
+
 struct bdev_aio_io_channel {
 	uint64_t				io_inflight;
 #ifdef __FreeBSD__
