@@ -2189,6 +2189,7 @@ _bdev_nvme_reset_ctrlr_complete(struct nvme_ctrlr *nvme_ctrlr, void *ctx, int st
 	nvme_ctrlr->in_failover = false;
 
 	op_after_reset = bdev_nvme_check_op_after_reset(nvme_ctrlr, success);
+	SPDK_NOTICELOG("op_after_reset = %d\n", op_after_reset);
 	pthread_mutex_unlock(&nvme_ctrlr->mutex);
 
 	/* Delay callbacks when the next operation is a failover. */
