@@ -9329,7 +9329,7 @@ blob_set_xattr(struct spdk_blob *blob, const char *name, const void *value,
 
 	blob_verify_md_op(blob);
 
-	if (blob->md_ro) {
+	if (blob->md_ro && internal) {
 		return -EPERM;
 	}
 
@@ -9406,7 +9406,7 @@ blob_remove_xattr(struct spdk_blob *blob, const char *name, bool internal)
 
 	blob_verify_md_op(blob);
 
-	if (blob->md_ro) {
+	if (blob->md_ro && internal) {
 		return -EPERM;
 	}
 	xattrs = internal ? &blob->xattrs_internal : &blob->xattrs;
