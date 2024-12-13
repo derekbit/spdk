@@ -6506,6 +6506,23 @@ spdk_bs_create_blob_ext(struct spdk_blob_store *bs, const struct spdk_blob_opts 
 
 /* START blob_cleanup */
 
+enum blob_inflate_type {
+	/*
+	 * Detach from parent, no allocation and copy are done.
+	 */
+	BLOB_INFLATE_ALLOCATE_NONE,
+	/*
+	 * Decouple from parent, unallocated clusters which are allocated in the parent are
+	   allocated and copied from the parent.
+	 */
+	BLOB_INFLATE_ALLOCATE_UNALLOCATED,
+	/*
+	 * Inflate, all unallocated clusters are allocated and copied from the parent or zero
+	   filled if not allocated in the parent.
+	 */
+	BLOB_INFLATE_ALLOCATE_ALL,
+};
+
 struct spdk_clone_snapshot_ctx {
 	struct spdk_bs_cpl      cpl;
 	int bserrno;
@@ -6517,8 +6534,9 @@ struct spdk_clone_snapshot_ctx {
 	uint64_t cluster;
 
 	/* For inflation force allocation of all unallocated clusters and remove
-	 * thin-provisioning. Otherwise only decouple parent and keep clone thin. */
-	bool allocate_all;
+	 * thin-provisioning. For decoupling from parent, we keep clone thin and
+	 * can allocate. For detach, keep clone thin but don'at allocate any cluster */
+	enum blob_inflate_type allocate_type;
 
 	struct {
 		spdk_blob_id id;
@@ -7122,7 +7140,7 @@ bs_inflate_blob_done(struct spdk_clone_snapshot_ctx *ctx)
 	struct spdk_blob *_blob = ctx->original.blob;
 	struct spdk_blob *_parent;
 
-	if (ctx->allocate_all) {
+	if (ctx->allocate_type == BLOB_INFLATE_ALLOCATE_ALL) {
 		/* remove thin provisioning */
 		bs_blob_list_remove(_blob);
 		if (_blob->parent_id == SPDK_BLOBID_EXTERNAL_SNAPSHOT) {
@@ -7135,7 +7153,7 @@ bs_inflate_blob_done(struct spdk_clone_snapshot_ctx *ctx)
 		blob_back_bs_destroy(_blob);
 		_blob->parent_id = SPDK_BLOBID_INVALID;
 	} else {
-		/* For now, esnap clones always have allocate_all set. */
+		/* For now, esnap clones always have BLOB_INFLATE_ALLOCATE_ALL set. */
 		assert(!blob_is_esnap_clone(_blob));
 
 		_parent = ((struct spdk_blob_bs_dev *)(_blob->back_bs_dev))->blob;
@@ -7201,7 +7219,8 @@ bs_inflate_blob_touch_next(void *cb_arg, int bserrno)
 	}
 
 	for (; ctx->cluster < _blob->active.num_clusters; ctx->cluster++) {
-		if (bs_cluster_needs_allocation(_blob, ctx->cluster, ctx->allocate_all)) {
+		if (bs_cluster_needs_allocation(_blob, ctx->cluster,
+						ctx->allocate_type == BLOB_INFLATE_ALLOCATE_ALL)) {
 			break;
 		}
 	}
@@ -7256,7 +7275,7 @@ bs_inflate_blob_open_cpl(void *cb_arg, struct spdk_blob *_blob, int bserrno)
 
 	switch (_blob->parent_id) {
 	case SPDK_BLOBID_INVALID:
-		if (!ctx->allocate_all) {
+		if (ctx->allocate_type != BLOB_INFLATE_ALLOCATE_ALL) {
 			/* This blob has no parent, so we cannot decouple it. */
 			SPDK_ERRLOG("Cannot decouple parent of blob with no parent.\n");
 			bs_clone_snapshot_origblob_cleanup(ctx, -EINVAL);
@@ -7264,13 +7283,19 @@ bs_inflate_blob_open_cpl(void *cb_arg, struct spdk_blob *_blob, int bserrno)
 		}
 		break;
 	case SPDK_BLOBID_EXTERNAL_SNAPSHOT:
+		if (ctx->allocate_type == BLOB_INFLATE_ALLOCATE_NONE) {
+			SPDK_ERRLOG("Cannot detach a blob from an external snapshot parent.\n");
+			bs_clone_snapshot_origblob_cleanup(ctx, -EINVAL);
+			return;
+		}
+
 		/*
 		 * It would be better to rely on back_bs_dev->is_zeroes(), to determine which
 		 * clusters require allocation. Until there is a blobstore consumer that
 		 * uses esnaps with an spdk_bs_dev that implements a useful is_zeroes() it is not
 		 * worth the effort.
 		 */
-		ctx->allocate_all = true;
+		ctx->allocate_type = BLOB_INFLATE_ALLOCATE_ALL;
 		break;
 	default:
 		break;
@@ -7282,12 +7307,18 @@ bs_inflate_blob_open_cpl(void *cb_arg, struct spdk_blob *_blob, int bserrno)
 		return;
 	}
 
+	/* Skip allocation anc copy phase if not requested */
+	if (ctx->allocate_type == BLOB_INFLATE_ALLOCATE_NONE) {
+		bs_inflate_blob_done(ctx);
+		return;
+	}
+
 	/* Do two passes - one to verify that we can obtain enough clusters
 	 * and another to actually claim them.
 	 */
 	clusters_needed = 0;
 	for (i = 0; i < _blob->active.num_clusters; i++) {
-		if (bs_cluster_needs_allocation(_blob, i, ctx->allocate_all)) {
+		if (bs_cluster_needs_allocation(_blob, i, ctx->allocate_type == BLOB_INFLATE_ALLOCATE_ALL)) {
 			clusters_needed++;
 		}
 	}
@@ -7304,7 +7335,8 @@ bs_inflate_blob_open_cpl(void *cb_arg, struct spdk_blob *_blob, int bserrno)
 
 static void
 bs_inflate_blob(struct spdk_blob_store *bs, struct spdk_io_channel *channel,
-		spdk_blob_id blobid, bool allocate_all, spdk_blob_op_complete cb_fn, void *cb_arg)
+		spdk_blob_id blobid, enum blob_inflate_type allocate_type, spdk_blob_op_complete cb_fn,
+		void *cb_arg)
 {
 	struct spdk_clone_snapshot_ctx *ctx = calloc(1, sizeof(*ctx));
 
@@ -7318,7 +7350,7 @@ bs_inflate_blob(struct spdk_blob_store *bs, struct spdk_io_channel *channel,
 	ctx->bserrno = 0;
 	ctx->original.id = blobid;
 	ctx->channel = channel;
-	ctx->allocate_all = allocate_all;
+	ctx->allocate_type = allocate_type;
 
 	spdk_bs_open_blob(bs, ctx->original.id, bs_inflate_blob_open_cpl, ctx);
 }
@@ -7327,14 +7359,21 @@ void
 spdk_bs_inflate_blob(struct spdk_blob_store *bs, struct spdk_io_channel *channel,
 		     spdk_blob_id blobid, spdk_blob_op_complete cb_fn, void *cb_arg)
 {
-	bs_inflate_blob(bs, channel, blobid, true, cb_fn, cb_arg);
+	bs_inflate_blob(bs, channel, blobid, BLOB_INFLATE_ALLOCATE_ALL, cb_fn, cb_arg);
 }
 
 void
 spdk_bs_blob_decouple_parent(struct spdk_blob_store *bs, struct spdk_io_channel *channel,
 			     spdk_blob_id blobid, spdk_blob_op_complete cb_fn, void *cb_arg)
 {
-	bs_inflate_blob(bs, channel, blobid, false, cb_fn, cb_arg);
+	bs_inflate_blob(bs, channel, blobid, BLOB_INFLATE_ALLOCATE_UNALLOCATED, cb_fn, cb_arg);
+}
+
+void
+spdk_bs_blob_detach_parent(struct spdk_blob_store *bs, spdk_blob_id blobid,
+			   spdk_blob_op_complete cb_fn, void *cb_arg)
+{
+	bs_inflate_blob(bs, NULL, blobid, BLOB_INFLATE_ALLOCATE_NONE, cb_fn, cb_arg);
 }
 /* END spdk_bs_inflate_blob */
 
