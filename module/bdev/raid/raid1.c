@@ -316,6 +316,9 @@ raid1_submit_read_request(struct raid_bdev_io *raid_io)
 		return 0;
 	}
 
+	SPDK_NOTICELOG("read from base bdev %d and offset_blocks=%" PRIu64 ", num_blocks=%" PRIu64 "\n",
+		       idx, raid_io->offset_blocks, raid_io->num_blocks);
+
 	base_info = &raid_bdev->base_bdev_info[idx];
 	base_ch = raid_bdev_channel_get_base_channel(raid_ch, idx);
 
