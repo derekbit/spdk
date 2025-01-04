@@ -128,6 +128,8 @@ blob_bs_dev_readv(struct spdk_bs_dev *dev, struct spdk_io_channel *channel,
 {
 	struct spdk_blob_bs_dev *b = (struct spdk_blob_bs_dev *)dev;
 
+	SPDK_NOTICELOG("blob_bs_dev_readv\n");
+
 	/* The backing blob may be smaller than this blob, so zero any trailing bytes. */
 	zero_trailing_bytes(b, iov, iovcnt, lba, &lba_count);
 
@@ -142,6 +144,8 @@ blob_bs_dev_readv_ext(struct spdk_bs_dev *dev, struct spdk_io_channel *channel,
 		      struct spdk_blob_ext_io_opts *ext_opts)
 {
 	struct spdk_blob_bs_dev *b = (struct spdk_blob_bs_dev *)dev;
+
+	SPDK_NOTICELOG("blob_bs_dev_readv_ext\n");
 
 	/* The backing blob may be smaller than this blob, so zero any trailing bytes. */
 	zero_trailing_bytes(b, iov, iovcnt, lba, &lba_count);

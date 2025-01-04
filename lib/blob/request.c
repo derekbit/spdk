@@ -208,9 +208,11 @@ bs_sequence_readv_bs_dev(spdk_bs_sequence_t *seq, struct spdk_bs_dev *bs_dev,
 
 	if (set->ext_io_opts) {
 		assert(bs_dev->readv_ext);
+		SPDK_NOTICELOG("bs_sequence_readv_bs_dev: bs_dev->readv_ext\n");
 		bs_dev->readv_ext(bs_dev, back_channel, iov, iovcnt, lba, lba_count,
 				  &set->cb_args, set->ext_io_opts);
 	} else {
+		SPDK_NOTICELOG("bs_sequence_readv_bs_dev: bs_dev->readv\n");
 		bs_dev->readv(bs_dev, back_channel, iov, iovcnt, lba, lba_count, &set->cb_args);
 	}
 }

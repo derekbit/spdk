@@ -1566,11 +1566,14 @@ blob_load_backing_dev(spdk_bs_sequence_t *seq, void *cb_arg)
 					  blob_load_snapshot_cpl, ctx);
 			return;
 		} else {
+			SPDK_NOTICELOG("blob 0x%" PRIx64 " is a thin provisioned blob but has no "
+				       "snapshot\n", blob->id);
 			/* add zeroes_dev for thin provisioned blob */
 			blob->back_bs_dev = bs_create_zeroes_dev();
 		}
 	} else {
 		/* standard blob */
+		SPDK_NOTICELOG("blob is not a thin provisioned blob\n");
 		blob->back_bs_dev = NULL;
 	}
 	blob_load_final(ctx, 0);
@@ -3415,6 +3418,8 @@ blob_request_submit_rw_iov(struct spdk_blob *blob, struct spdk_io_channel *_chan
 	struct spdk_bs_cpl	cpl;
 
 	assert(blob != NULL);
+
+	SPDK_NOTICELOG("blob_request_submit_rw_iov: offset %" PRIu64 ", length %" PRIu64 "\n", offset, length);
 
 	if (!read && blob->data_ro) {
 		cb_fn(cb_arg, -EPERM);
