@@ -3870,6 +3870,9 @@ raid_bdev_configure_base_bdev(struct raid_base_bdev_info *base_info, bool existi
 			data_offset = base_info->data_offset;
 		}
 
+		SPDK_NOTICELOG("Data offset %lu on bdev '%s'\n", data_offset, base_info->name);
+		SPDK_NOTICELOG("optimal_io_boundary %lu on bdev '%s'\n", bdev->optimal_io_boundary, base_info->name);
+
 		if (bdev->optimal_io_boundary != 0) {
 			data_offset = spdk_divide_round_up(data_offset,
 							   bdev->optimal_io_boundary) * bdev->optimal_io_boundary;

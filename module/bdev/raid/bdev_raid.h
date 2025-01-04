@@ -504,6 +504,8 @@ raid_bdev_readv_blocks_ext(struct raid_base_bdev_info *base_info, struct spdk_io
 			   uint64_t num_blocks, spdk_bdev_io_completion_cb cb, void *cb_arg,
 			   struct spdk_bdev_ext_io_opts *opts)
 {
+	SPDK_NOTICELOG("raid_bdev_readv_blocks_ext: base_info->data_offset= %" PRIu64 " offset_blocks=%" PRIu64 " num_blocks=%" PRIu64 "\n",
+		       base_info->data_offset, offset_blocks, num_blocks);
 	return spdk_bdev_readv_blocks_ext(base_info->desc, ch, iov, iovcnt,
 					  base_info->data_offset + offset_blocks, num_blocks, cb, cb_arg, opts);
 }
