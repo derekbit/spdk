@@ -398,7 +398,7 @@ raid1_submit_write_request(struct raid_bdev_io *raid_io)
 		raid_io->base_bdev_io_submitted++;
 	}
 
-	SPDK_NOTIECELOG("Finish write to base bdev base_bdev_io_submitted=%d and offset_blocks=%" PRIu64 ", num_blocks=%" PRIu64 "\n",
+	SPDK_NOTICELOG("Finish write to base bdev base_bdev_io_submitted=%d and offset_blocks=%" PRIu64 ", num_blocks=%" PRIu64 "\n",
 			raid_io->base_bdev_io_submitted, raid_io->offset_blocks, raid_io->num_blocks);
 
 	if (raid_io->base_bdev_io_submitted == 0) {
