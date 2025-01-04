@@ -1484,6 +1484,7 @@ bdev_submit_request(struct spdk_bdev *bdev, struct spdk_io_channel *ioch,
 		bdev_io->internal.f.has_accel_sequence = false;
 	}
 
+	SPDK_NOTICELOG("bdev_submit_request: bdev_io=%p\n", bdev_io);
 	bdev->fn_table->submit_request(ioch, bdev_io);
 }
 
@@ -2819,6 +2820,7 @@ bdev_io_do_submit(struct spdk_bdev_channel *bdev_ch, struct spdk_bdev_io *bdev_i
 	}
 
 	if (spdk_likely(TAILQ_EMPTY(&shared_resource->nomem_io))) {
+		SPDK_NOTICELOG("bdev_io_do_submit: bdev_io->type %d\n", bdev_io->type);
 		bdev_io_increment_outstanding(bdev_ch, shared_resource);
 		bdev_io->internal.f.in_submit_request = true;
 		bdev_submit_request(bdev, ch, bdev_io);
@@ -3542,18 +3544,23 @@ _bdev_io_submit(void *ctx)
 	struct spdk_bdev *bdev = bdev_io->bdev;
 	struct spdk_bdev_channel *bdev_ch = bdev_io->internal.ch;
 
+	SPDK_NOTICELOG("_bdev_io_submit: bdev_ch->flag=%x\n", bdev_ch->flags);
+
 	if (spdk_likely(bdev_ch->flags == 0)) {
 		bdev_io_do_submit(bdev_ch, bdev_io);
 		return;
 	}
 
 	if (bdev_ch->flags & BDEV_CH_RESET_IN_PROGRESS) {
+		SPDK_NOTICELOG("bdev_io_submit: bdev_ch->flag is BDEV_CH_RESET_IN_PROGRESS\n");
 		_bdev_io_complete_in_submit(bdev_ch, bdev_io, SPDK_BDEV_IO_STATUS_ABORTED);
 	} else if (bdev_ch->flags & BDEV_CH_QOS_ENABLED) {
 		if (spdk_unlikely(bdev_io->type == SPDK_BDEV_IO_TYPE_ABORT) &&
 		    bdev_abort_queued_io(&bdev_ch->qos_queued_io, bdev_io->u.abort.bio_to_abort)) {
+				SPDK_NOTICELOG("bdev_io_submit: bdev_ch->flag is BDEV_CH_QOS_ENABLED 1\n");
 			_bdev_io_complete_in_submit(bdev_ch, bdev_io, SPDK_BDEV_IO_STATUS_SUCCESS);
 		} else {
+			SPDK_NOTICELOG("bdev_io_submit: bdev_ch->flag is BDEV_CH_QOS_ENABLED 2\n");
 			TAILQ_INSERT_TAIL(&bdev_ch->qos_queued_io, bdev_io, internal.link);
 			bdev_qos_io_submit(bdev_ch, bdev->internal.qos);
 		}
@@ -3656,6 +3663,7 @@ bdev_io_submit(struct spdk_bdev_io *bdev_io)
 		return;
 	}
 
+	SPDK_NOTICELOG("bdev_io_submit\n");
 	_bdev_io_submit(bdev_io);
 }
 
@@ -3710,6 +3718,7 @@ _bdev_io_submit_ext(struct spdk_bdev_desc *desc, struct spdk_bdev_io *bdev_io)
 		bdev_io->u.bdev.accel_sequence = NULL;
 	}
 
+	SPDK_NOTICELOG("bdev_io_submit\n");
 	bdev_io_submit(bdev_io);
 }
 
@@ -5548,6 +5557,9 @@ bdev_readv_blocks_with_md(struct spdk_bdev_desc *desc, struct spdk_io_channel *c
 	bdev_io->u.bdev.accel_sequence = seq;
 	bdev_io->u.bdev.dif_check_flags = dif_check_flags;
 
+	SPDK_NOTICELOG("bdev_readv_blocks_with_md: offset_blocks=%" PRIu64 " num_blocks=%" PRIu64 ", iovcnt=%d\n",
+		       offset_blocks, num_blocks, iovcnt);
+
 	_bdev_io_submit_ext(desc, bdev_io);
 
 	return 0;
@@ -5639,6 +5651,9 @@ spdk_bdev_readv_blocks_ext(struct spdk_bdev_desc *desc, struct spdk_io_channel *
 
 	dif_check_flags = bdev->dif_check_flags &
 			  ~(bdev_get_ext_io_opt(opts, dif_check_flags_exclude_mask, 0));
+
+	SPDK_NOTICELOG("spdk_bdev_readv_blocks_ext: offset_blocks=%" PRIu64 " num_blocks=%" PRIu64 "\n",
+		       offset_blocks, num_blocks);
 
 	return bdev_readv_blocks_with_md(desc, ch, iov, iovcnt, md, offset_blocks,
 					 num_blocks, domain, domain_ctx, seq, dif_check_flags, cb, cb_arg);
