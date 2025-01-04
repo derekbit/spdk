@@ -193,6 +193,8 @@ bdev_blob_readv_ext(struct spdk_bs_dev *dev, struct spdk_io_channel *channel,
 	struct spdk_bdev_ext_io_opts bdev_io_opts;
 	int rc;
 
+	SPDK_NOTICELOG("bdev_blob_readv_ext: lba=%" PRIu64 ", lba_count=%" PRIu32 "\n", lba, lba_count);
+
 	blob_ext_io_opts_to_bdev_opts(&bdev_io_opts, io_opts);
 	rc = spdk_bdev_readv_blocks_ext(__get_desc(dev), channel, iov, iovcnt, lba, lba_count,
 					bdev_blob_io_complete, cb_args, &bdev_io_opts);
