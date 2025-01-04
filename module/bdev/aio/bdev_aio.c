@@ -225,6 +225,7 @@ bdev_aio_submit_io(enum spdk_bdev_io_type type, struct file_disk *fdisk,
 	aio_task->len = nbytes;
 	aio_task->ch = aio_ch;
 
+	SPDK_NOTICELOG("submitting io offset %lu, len %lu\n", offset, nbytes);
 	return io_submit(aio_ch->io_ctx, 1, &iocb);
 }
 #endif
@@ -465,6 +466,8 @@ bdev_aio_io_channel_poll(struct bdev_aio_io_channel *io_ch)
 
 	for (i = 0; i < nr; i++) {
 		aio_task = events[i].data;
+
+		SPDK_NOTICELOG("Debug ---> nr=%d, i=%d, aio_task=%p\n", nr, i, aio_task);
 		aio_task->ch->io_inflight--;
 		if (events[i].res == aio_task->len) {
 			spdk_bdev_io_complete(spdk_bdev_io_from_ctx(aio_task), SPDK_BDEV_IO_STATUS_SUCCESS);
