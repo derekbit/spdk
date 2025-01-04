@@ -1158,6 +1158,8 @@ vbdev_lvol_submit_request(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_
 	struct spdk_lvol *lvol = bdev_io->bdev->ctxt;
 	struct spdk_lvol_channel *lvol_ch = (struct spdk_lvol_channel *)spdk_io_channel_get_ctx(ch);
 
+	SPDK_NOTICELOG("vbdev_lvol_submit_request\n");
+
 	if (!TAILQ_EMPTY(&lvol_ch->freezed_ranges)) {
 		struct freeze_range *range;
 
@@ -1173,6 +1175,8 @@ vbdev_lvol_submit_request(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_
 
 	switch (bdev_io->type) {
 	case SPDK_BDEV_IO_TYPE_READ:
+		SPDK_NOTICELOG("vbdev_lvol_submit_request: read num_blocks %d, blocklen %d\n",
+			       bdev_io->u.bdev.num_blocks, bdev_io->bdev->blocklen);
 		spdk_bdev_io_get_buf(bdev_io, lvol_get_buf_cb,
 				     bdev_io->u.bdev.num_blocks * bdev_io->bdev->blocklen);
 		break;
