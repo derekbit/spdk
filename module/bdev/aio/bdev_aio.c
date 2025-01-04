@@ -623,48 +623,68 @@ bdev_aio_get_buf_cb(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io,
 static int
 _bdev_aio_submit_request(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io)
 {
-	struct file_disk *fdisk = (struct file_disk *)bdev_io->bdev->ctxt;
+    struct file_disk *fdisk = (struct file_disk *)bdev_io->bdev->ctxt;
 
-	switch (bdev_io->type) {
-	/* Read and write operations must be performed on buffers aligned to
-	 * bdev->required_alignment. If user specified unaligned buffers,
-	 * get the aligned buffer from the pool by calling spdk_bdev_io_get_buf. */
-	case SPDK_BDEV_IO_TYPE_READ:
-		spdk_bdev_io_get_buf(bdev_io, bdev_aio_get_buf_cb,
-				     bdev_io->u.bdev.num_blocks * bdev_io->bdev->blocklen);
-		return 0;
-	case SPDK_BDEV_IO_TYPE_WRITE:
-		if (fdisk->readonly) {
-			spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_FAILED);
-		} else {
-			spdk_bdev_io_get_buf(bdev_io, bdev_aio_get_buf_cb,
-					     bdev_io->u.bdev.num_blocks * bdev_io->bdev->blocklen);
-		}
-		return 0;
+    switch (bdev_io->type) {
+    case SPDK_BDEV_IO_TYPE_READ: {
+        uint64_t len = bdev_io->u.bdev.num_blocks * bdev_io->bdev->blocklen;
+        off_t offset = bdev_io->u.bdev.offset_blocks * bdev_io->bdev->blocklen;
+        SPDK_NOTICELOG("Debug --> Read len=%llu, offset=%llu\n", len, offset);
 
-	case SPDK_BDEV_IO_TYPE_FLUSH:
-		bdev_aio_flush((struct file_disk *)bdev_io->bdev->ctxt,
-			       (struct bdev_aio_task *)bdev_io->driver_ctx);
-		return 0;
+        ssize_t bytes_read = pread(fdisk->fd, bdev_io->u.bdev.iovs[0].iov_base, len, offset);
+        if (bytes_read == (ssize_t)len) {
+            spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_SUCCESS);
+        } else {
+            SPDK_ERRLOG("Read error: expected %llu bytes, got %zd\n", len, bytes_read);
+            spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_FAILED);
+        }
+        return 0;
+    }
+    case SPDK_BDEV_IO_TYPE_WRITE: {
+        if (fdisk->readonly) {
+            SPDK_ERRLOG("Write operation attempted on read-only file\n");
+            spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_FAILED);
+            return 0;
+        }
 
-	case SPDK_BDEV_IO_TYPE_RESET:
-		bdev_aio_reset((struct file_disk *)bdev_io->bdev->ctxt,
-			       (struct bdev_aio_task *)bdev_io->driver_ctx);
-		return 0;
+        uint64_t len = bdev_io->u.bdev.num_blocks * bdev_io->bdev->blocklen;
+        off_t offset = bdev_io->u.bdev.offset_blocks * bdev_io->bdev->blocklen;
+        SPDK_NOTICELOG("Debug --> Write len=%llu, offset=%llu\n", len, offset);
+
+        ssize_t bytes_written = pwrite(fdisk->fd, bdev_io->u.bdev.iovs[0].iov_base, len, offset);
+        if (bytes_written == (ssize_t)len) {
+            spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_SUCCESS);
+        } else {
+            SPDK_ERRLOG("Write error: expected %llu bytes, wrote %zd\n", len, bytes_written);
+            spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_FAILED);
+        }
+        return 0;
+    }
+    case SPDK_BDEV_IO_TYPE_FLUSH:
+        bdev_aio_flush((struct file_disk *)bdev_io->bdev->ctxt,
+                       (struct bdev_aio_task *)bdev_io->driver_ctx);
+        return 0;
+
+    case SPDK_BDEV_IO_TYPE_RESET:
+        bdev_aio_reset((struct file_disk *)bdev_io->bdev->ctxt,
+                       (struct bdev_aio_task *)bdev_io->driver_ctx);
+        return 0;
 
 #ifndef __FreeBSD__
-	case SPDK_BDEV_IO_TYPE_UNMAP:
-		bdev_aio_unmap(bdev_io);
-		return 0;
+    case SPDK_BDEV_IO_TYPE_UNMAP:
+        bdev_aio_unmap(bdev_io);
+        return 0;
 
-	case SPDK_BDEV_IO_TYPE_WRITE_ZEROES:
-		bdev_aio_write_zeros(bdev_io);
-		return 0;
+    case SPDK_BDEV_IO_TYPE_WRITE_ZEROES:
+        bdev_aio_write_zeros(bdev_io);
+        return 0;
 #endif
 
-	default:
-		return -1;
-	}
+    default:
+        SPDK_ERRLOG("Unsupported IO type %d\n", bdev_io->type);
+        spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_FAILED);
+        return -1;
+    }
 }
 
 static void
