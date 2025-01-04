@@ -355,6 +355,9 @@ raid1_submit_write_request(struct raid_bdev_io *raid_io)
 		raid_bdev_io_set_default_status(raid_io, SPDK_BDEV_IO_STATUS_FAILED);
 	}
 
+	SPDK_NOTICELOG("write to base bdev base_bdev_io_submitted=%d and offset_blocks=%" PRIu64 ", num_blocks=%" PRIu64 "\n",
+		       raid_io->base_bdev_io_submitted, raid_io->offset_blocks, raid_io->num_blocks);
+
 	raid1_init_ext_io_opts(&io_opts, raid_io);
 	for (idx = raid_io->base_bdev_io_submitted; idx < raid_bdev->num_base_bdevs; idx++) {
 		base_info = &raid_bdev->base_bdev_info[idx];
@@ -373,6 +376,11 @@ raid1_submit_write_request(struct raid_bdev_io *raid_io)
 		ret = raid_bdev_writev_blocks_ext(base_info, base_ch, raid_io->iovs, raid_io->iovcnt,
 						  raid_io->offset_blocks, raid_io->num_blocks,
 						  raid1_write_bdev_io_completion, raid_io, &io_opts);
+
+		SPDK_NOTICELOG("write to base bdev %d and offset_blocks=%" PRIu64 ", num_blocks=%" PRIu64 ", ret=%d\n",
+			       idx, raid_io->offset_blocks, raid_io->num_blocks, ret);
+
+
 		if (spdk_unlikely(ret != 0)) {
 			if (spdk_unlikely(ret == -ENOMEM)) {
 				raid_bdev_queue_io_wait(raid_io, spdk_bdev_desc_get_bdev(base_info->desc),
@@ -389,6 +397,9 @@ raid1_submit_write_request(struct raid_bdev_io *raid_io)
 
 		raid_io->base_bdev_io_submitted++;
 	}
+
+	SPDK_NOTIECELOG("Finish write to base bdev base_bdev_io_submitted=%d and offset_blocks=%" PRIu64 ", num_blocks=%" PRIu64 "\n",
+			raid_io->base_bdev_io_submitted, raid_io->offset_blocks, raid_io->num_blocks);
 
 	if (raid_io->base_bdev_io_submitted == 0) {
 		ret = -ENODEV;
