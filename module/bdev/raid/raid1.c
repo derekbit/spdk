@@ -712,6 +712,9 @@ raid1_submit_process_request(struct raid_bdev_process_request *process_req,
 	struct raid_bdev_io *raid_io = &process_req->raid_io;
 	int ret;
 
+	SPDK_NOTICELOG("raid1_submit_process_request: offset_blocks=%" PRIu64 ", num_blocks=%" PRIu64 "\n",
+		       process_req->offset_blocks, process_req->num_blocks);
+
 	raid_bdev_io_init(raid_io, raid_ch, SPDK_BDEV_IO_TYPE_READ,
 			  process_req->offset_blocks, process_req->num_blocks,
 			  &process_req->iov, 1, process_req->md_buf, NULL, NULL);

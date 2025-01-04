@@ -5650,6 +5650,9 @@ bdev_write_blocks_with_md(struct spdk_bdev_desc *desc, struct spdk_io_channel *c
 	struct spdk_bdev_io *bdev_io;
 	struct spdk_bdev_channel *channel = __io_ch_to_bdev_ch(ch);
 
+	SPDK_NOTICELOG("bdev_write_blocks_with_md: offset_blocks=%" PRIu64 " num_blocks=%" PRIu64 "\n",
+		       offset_blocks, num_blocks);
+
 	if (!desc->write) {
 		return -EBADF;
 	}
@@ -5690,10 +5693,15 @@ spdk_bdev_write(struct spdk_bdev_desc *desc, struct spdk_io_channel *ch,
 {
 	uint64_t offset_blocks, num_blocks;
 
+	SPDK_NOTICELOG("bdev_write: offset=%" PRIu64 " nbytes=%" PRIu64 "\n", offset, nbytes);
+
 	if (bdev_bytes_to_blocks(spdk_bdev_desc_get_bdev(desc), offset, &offset_blocks,
 				 nbytes, &num_blocks) != 0) {
 		return -EINVAL;
 	}
+
+	SPDK_NOTICELOG("bdev_write: offset_blocks=%" PRIu64 " num_blocks=%" PRIu64 "\n",
+		       offset_blocks, num_blocks);
 
 	return spdk_bdev_write_blocks(desc, ch, buf, offset_blocks, num_blocks, cb, cb_arg);
 }
