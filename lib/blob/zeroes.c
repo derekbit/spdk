@@ -73,6 +73,8 @@ zeroes_readv_ext(struct spdk_bs_dev *dev, struct spdk_io_channel *channel,
 {
 	int i, rc;
 
+	SPDK_NOTICELOG("zeroes_readv_ext: lba=%" PRIu64 ", lba_count=%" PRIu32 "\n", lba, lba_count);
+
 	if (ext_io_opts->memory_domain) {
 		rc = spdk_memory_domain_memzero(ext_io_opts->memory_domain, ext_io_opts->memory_domain_ctx, iov,
 						iovcnt, _read_memory_domain_memzero_done, cb_args);

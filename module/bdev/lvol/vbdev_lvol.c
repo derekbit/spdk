@@ -2068,6 +2068,7 @@ bs_dev_degraded_readv_ext(struct spdk_bs_dev *dev, struct spdk_io_channel *chann
 			  struct spdk_blob_ext_io_opts *io_opts)
 {
 	assert(false);
+	SPDK_NOTICELOG("bs_dev_degraded_readv_ext: lba=%" PRIu64 ", lba_count=%" PRIu32 "\n", lba, lba_count);
 	cb_args->cb_fn(cb_args->channel, cb_args->cb_arg, -EIO);
 }
 
