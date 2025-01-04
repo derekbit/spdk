@@ -3477,6 +3477,9 @@ blob_request_submit_rw_iov(struct spdk_blob *blob, struct spdk_io_channel *_chan
 		if (read) {
 			spdk_bs_sequence_t *seq;
 
+			SPDK_NOTICELOG("blob_request_submit_rw_iov: lba=%" PRIu64 ", lba_count=%" PRIu64 ", is_allocated=%d\n",
+				       lba, lba_count, is_allocated);
+
 			seq = bs_sequence_start_blob(_channel, &cpl, blob);
 			if (!seq) {
 				cb_fn(cb_arg, -ENOMEM);
@@ -9419,6 +9422,7 @@ spdk_blob_io_readv_ext(struct spdk_blob *blob, struct spdk_io_channel *channel,
 		       struct iovec *iov, int iovcnt, uint64_t offset, uint64_t length,
 		       spdk_blob_op_complete cb_fn, void *cb_arg, struct spdk_blob_ext_io_opts *io_opts)
 {
+	SPDK_NOTICELOG("blob_io_readv_ext: offset %" PRIu64 ", length %" PRIu64 "\n", offset, length);
 	blob_request_submit_rw_iov(blob, channel, iov, iovcnt, offset, length, cb_fn, cb_arg, true,
 				   io_opts);
 }

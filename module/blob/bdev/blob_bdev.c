@@ -146,6 +146,8 @@ bdev_blob_readv(struct spdk_bs_dev *dev, struct spdk_io_channel *channel,
 {
 	int rc;
 
+	SPDK_NOTICELOG("bdev_blob_readv: lba=%" PRIu64 ", lba_count=%" PRIu32 "\n", lba, lba_count);
+
 	rc = spdk_bdev_readv_blocks(__get_desc(dev), channel, iov, iovcnt, lba,
 				    lba_count, bdev_blob_io_complete, cb_args);
 	if (rc == -ENOMEM) {

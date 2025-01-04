@@ -200,7 +200,7 @@ bs_sequence_readv_bs_dev(spdk_bs_sequence_t *seq, struct spdk_bs_dev *bs_dev,
 	struct spdk_bs_request_set      *set = (struct spdk_bs_request_set *)seq;
 	struct spdk_io_channel		*back_channel = set->back_channel;
 
-	SPDK_DEBUGLOG(blob_rw, "Reading %" PRIu32 " blocks from LBA %" PRIu64 "\n", lba_count,
+	SPDK_NOTICELOG("bs_sequence_readv_bs_dev: Reading %" PRIu32 " blocks from LBA %" PRIu64 "\n", lba_count,
 		      lba);
 
 	set->u.sequence.cb_fn = cb_fn;
@@ -222,7 +222,7 @@ bs_sequence_readv_dev(spdk_bs_sequence_t *seq, struct iovec *iov, int iovcnt,
 	struct spdk_bs_request_set      *set = (struct spdk_bs_request_set *)seq;
 	struct spdk_bs_channel       *channel = set->channel;
 
-	SPDK_DEBUGLOG(blob_rw, "Reading %" PRIu32 " blocks from LBA %" PRIu64 "\n", lba_count,
+	SPDK_NOTICELOG("bs_sequence_readv_dev: Reading %" PRIu32 " blocks from LBA %" PRIu64 "\n", lba_count,
 		      lba);
 
 	set->u.sequence.cb_fn = cb_fn;

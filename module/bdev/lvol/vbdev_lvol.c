@@ -1025,6 +1025,7 @@ lvol_read(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io)
 	lvol_io->ext_io_opts.memory_domain = bdev_io->u.bdev.memory_domain;
 	lvol_io->ext_io_opts.memory_domain_ctx = bdev_io->u.bdev.memory_domain_ctx;
 
+	SPDK_NOTICELOG("lvol_read: start_page %d, num_pages %d\n", start_page, num_pages);
 	spdk_blob_io_readv_ext(blob, ch, bdev_io->u.bdev.iovs, bdev_io->u.bdev.iovcnt, start_page,
 			       num_pages, lvol_op_comp, bdev_io, &lvol_io->ext_io_opts);
 }
@@ -1065,6 +1066,7 @@ lvol_get_buf_cb(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io, bool s
 		return;
 	}
 
+	SPDK_NOTICELOG("lvol_get_buf_cb\n");
 	lvol_read(lvol_ch->bs_channel, bdev_io);
 }
 
