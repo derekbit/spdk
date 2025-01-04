@@ -5435,6 +5435,9 @@ bdev_read_blocks_with_md(struct spdk_bdev_desc *desc, struct spdk_io_channel *ch
 	bdev_io->u.bdev.dif_check_flags = bdev->dif_check_flags;
 	bdev_io_init(bdev_io, bdev, cb_arg, cb);
 
+	SPDK_NOTICELOG("bdev_read_blocks_with_md: offset_blocks=%" PRIu64 " num_blocks=%" PRIu64 ", blocklen=%zu\n",
+		       offset_blocks, num_blocks, bdev->blocklen);
+
 	bdev_io_submit(bdev_io);
 	return 0;
 }
