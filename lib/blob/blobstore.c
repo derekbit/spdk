@@ -2850,6 +2850,7 @@ bs_allocate_and_copy_cluster(struct spdk_blob *blob,
 	bool is_valid_range;
 	uint64_t copy_src_lba;
 	int rc;
+	bool need_buf = false;
 
 	ch = spdk_io_channel_get_ctx(_ch);
 
@@ -2896,6 +2897,8 @@ bs_allocate_and_copy_cluster(struct spdk_blob *blob,
 			bs_dev_byte_to_lba(blob->back_bs_dev, blob->bs->cluster_sz));
 	SPDK_NOTICELOG("blob_allocate_and_copy_cluster: cluster_start_page=%" PRIu32 ", cluster_number=%" PRIu32 ", is_zeroes=%d, can_copy=%d\n",
 			cluster_start_page, cluster_number, is_zeroes, can_copy);
+
+
 	if (blob->parent_id != SPDK_BLOBID_INVALID && !is_zeroes && !can_copy) {
 		ctx->buf = spdk_malloc(blob->bs->cluster_sz, blob->back_bs_dev->blocklen,
 				       NULL, SPDK_ENV_NUMA_ID_ANY, SPDK_MALLOC_DMA);
@@ -2958,14 +2961,14 @@ bs_allocate_and_copy_cluster(struct spdk_blob *blob,
 	} else {
 		if (is_zeroes) {
 			SPDK_NOTICELOG("blob_allocate_and_copy_cluster: bs_sequence_write_zeroes_dev, blob->parent_id=%" PRIu64 ", blob->bs->cluster_sz=%" PRIu32 "\n", blob->parent_id, blob->bs->cluster_sz);
-			// bs_sequence_write_zeroes_dev(ctx->seq,
+			// bs_sequence_read_bs_dev(ctx->seq, blob->back_bs_dev, ctx->buf,
 			// 			bs_dev_page_to_lba(blob->back_bs_dev, cluster_start_page),
 			// 			bs_dev_byte_to_lba(blob->back_bs_dev, blob->bs->cluster_sz),
-			// 			blob_write_zeros_cpl, ctx);
-			bs_sequence_read_bs_dev(ctx->seq, blob->back_bs_dev, ctx->buf,
-						bs_dev_page_to_lba(blob->back_bs_dev, cluster_start_page),
-						bs_dev_byte_to_lba(blob->back_bs_dev, blob->bs->cluster_sz),
-						blob_write_copy, ctx);
+			// 			blob_write_copy, ctx);
+			bs_sequence_write_zeroes_dev(ctx->seq,
+                                 bs_dev_page_to_lba(blob->bs, cluster_start_page),
+                                 bs_dev_byte_to_lba(blob->bs, blob->bs->cluster_sz),
+                                 blob_write_zeros_cpl, ctx);
 		} else {
 			SPDK_NOTICELOG("blob_allocate_and_copy_cluster: blob->parent_id=%" PRIu64 "\n", blob->parent_id);
 			blob_insert_cluster_on_md_thread(ctx->blob, cluster_number, ctx->new_cluster,
