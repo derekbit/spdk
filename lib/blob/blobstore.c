@@ -2906,6 +2906,9 @@ bs_allocate_and_copy_cluster(struct spdk_blob *blob,
 			bs_user_op_abort(op, -ENOMEM);
 			return;
 		}
+	} else {
+		ctx->buf = spdk_malloc(blob->bs->cluster_sz, blob->back_bs_dev->blocklen,
+				       NULL, SPDK_ENV_NUMA_ID_ANY, SPDK_MALLOC_DMA);
 	}
 
 	spdk_spin_lock(&blob->bs->used_lock);
