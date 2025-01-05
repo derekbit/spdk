@@ -2873,6 +2873,8 @@ bs_allocate_and_copy_cluster(struct spdk_blob *blob,
 	is_zeroes = is_valid_range && blob->back_bs_dev->is_zeroes(blob->back_bs_dev,
 			bs_dev_page_to_lba(blob->back_bs_dev, cluster_start_page),
 			bs_dev_byte_to_lba(blob->back_bs_dev, blob->bs->cluster_sz));
+	SPDK_NOTICELOG("blob_allocate_and_copy_cluster: cluster_start_page=%" PRIu32 ", cluster_number=%" PRIu32 ", is_zeroes=%d, can_copy=%d\n",
+			cluster_start_page, cluster_number, is_zeroes, can_copy);
 	if (blob->parent_id != SPDK_BLOBID_INVALID && !is_zeroes && !can_copy) {
 		ctx->buf = spdk_malloc(blob->bs->cluster_sz, blob->back_bs_dev->blocklen,
 				       NULL, SPDK_ENV_NUMA_ID_ANY, SPDK_MALLOC_DMA);
@@ -2916,8 +2918,10 @@ bs_allocate_and_copy_cluster(struct spdk_blob *blob,
 
 	if (blob->parent_id != SPDK_BLOBID_INVALID && !is_zeroes) {
 		if (can_copy) {
+			SPDK_NOTICELOG("blob_allocate_and_copy_cluster: can_copy\n");
 			blob_copy(ctx, op, copy_src_lba);
 		} else {
+			SPDK_NOTICELOG("blob_allocate_and_copy_cluster: !can_copy\n");
 			/* Read cluster from backing device */
 			bs_sequence_read_bs_dev(ctx->seq, blob->back_bs_dev, ctx->buf,
 						bs_dev_page_to_lba(blob->back_bs_dev, cluster_start_page),
