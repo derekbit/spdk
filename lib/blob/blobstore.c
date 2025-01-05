@@ -2966,8 +2966,8 @@ bs_allocate_and_copy_cluster(struct spdk_blob *blob,
 			// 			bs_dev_byte_to_lba(blob->back_bs_dev, blob->bs->cluster_sz),
 			// 			blob_write_copy, ctx);
 			bs_sequence_write_zeroes_dev(ctx->seq,
-                                 bs_dev_page_to_lba(blob->bs, cluster_start_page),
-                                 bs_dev_byte_to_lba(blob->bs, blob->bs->cluster_sz),
+								 bs_cluster_to_lba(blob->bs, ctx->new_cluster),
+			      				 bs_cluster_to_lba(blob->bs, 1),
                                  blob_write_zeros_cpl, ctx);
 		} else {
 			SPDK_NOTICELOG("blob_allocate_and_copy_cluster: blob->parent_id=%" PRIu64 "\n", blob->parent_id);
