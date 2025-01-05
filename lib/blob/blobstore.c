@@ -2955,10 +2955,14 @@ bs_allocate_and_copy_cluster(struct spdk_blob *blob,
 	} else {
 		if (is_zeroes) {
 			SPDK_NOTICELOG("blob_allocate_and_copy_cluster: bs_sequence_write_zeroes_dev, blob->parent_id=%" PRIu64 ", blob->bs->cluster_sz=%" PRIu32 "\n", blob->parent_id, blob->bs->cluster_sz);
-			bs_sequence_write_zeroes_dev(ctx->seq,
+			// bs_sequence_write_zeroes_dev(ctx->seq,
+			// 			bs_dev_page_to_lba(blob->back_bs_dev, cluster_start_page),
+			// 			bs_dev_byte_to_lba(blob->back_bs_dev, blob->bs->cluster_sz),
+			// 			blob_write_zeros_cpl, ctx);
+			bs_sequence_read_bs_dev(ctx->seq, blob->back_bs_dev, ctx->buf,
 						bs_dev_page_to_lba(blob->back_bs_dev, cluster_start_page),
 						bs_dev_byte_to_lba(blob->back_bs_dev, blob->bs->cluster_sz),
-						blob_write_zeros_cpl, ctx);
+						blob_write_copy, ctx);
 		} else {
 			SPDK_NOTICELOG("blob_allocate_and_copy_cluster: blob->parent_id=%" PRIu64 "\n", blob->parent_id);
 			blob_insert_cluster_on_md_thread(ctx->blob, cluster_number, ctx->new_cluster,
