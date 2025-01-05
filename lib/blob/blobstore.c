@@ -2888,6 +2888,7 @@ bs_allocate_and_copy_cluster(struct spdk_blob *blob,
 	}
 
 	spdk_spin_lock(&blob->bs->used_lock);
+	SPDK_NOTICELOG("blob_allocate_and_copy_cluster: cluster_number=%" PRIu32 "\n", cluster_number);
 	rc = bs_allocate_cluster(blob, cluster_number, &ctx->new_cluster, &ctx->new_extent_page,
 				 false);
 	spdk_spin_unlock(&blob->bs->used_lock);
@@ -2902,6 +2903,7 @@ bs_allocate_and_copy_cluster(struct spdk_blob *blob,
 	cpl.u.blob_basic.cb_fn = blob_allocate_and_copy_cluster_cpl;
 	cpl.u.blob_basic.cb_arg = ctx;
 
+	SPDK_NOTICELOG("blob_allocate_and_copy_cluster: bs_sequence_start_blob\n");
 	ctx->seq = bs_sequence_start_blob(_ch, &cpl, blob);
 	if (!ctx->seq) {
 		spdk_spin_lock(&blob->bs->used_lock);
@@ -2930,6 +2932,7 @@ bs_allocate_and_copy_cluster(struct spdk_blob *blob,
 		}
 
 	} else {
+		SPDK_NOTICELOG("blob_allocate_and_copy_cluster: blob->parent_id=%" PRIu64 "\n", blob->parent_id);
 		blob_insert_cluster_on_md_thread(ctx->blob, cluster_number, ctx->new_cluster,
 						 ctx->new_extent_page, ctx->new_cluster_page, blob_insert_cluster_cpl, ctx);
 	}
