@@ -672,10 +672,12 @@ _bdev_aio_submit_request(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_i
 
 #ifndef __FreeBSD__
     case SPDK_BDEV_IO_TYPE_UNMAP:
+		SPDK_NOTICELOG("Debug ===> bdev_aio_unmap\n");
         bdev_aio_unmap(bdev_io);
         return 0;
 
     case SPDK_BDEV_IO_TYPE_WRITE_ZEROES:
+		SPDK_NOTICELOG("Debug ===> bdev_aio_write_zeros\n");
         bdev_aio_write_zeros(bdev_io);
         return 0;
 #endif
