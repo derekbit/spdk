@@ -7,6 +7,7 @@
 #include "spdk/stdinc.h"
 #include "spdk/blob.h"
 #include "spdk/dma.h"
+#include "spdk/log.h"
 
 #include "blobstore.h"
 
