@@ -2938,11 +2938,13 @@ blob_calculate_lba_and_lba_count(struct spdk_blob *blob, uint64_t io_unit, uint6
 	*lba_count = length;
 
 	if (!bs_io_unit_is_allocated(blob, io_unit)) {
+		SPDK_NOTICELOG("blob_calculate_lba_and_lba_count1: io_unit %" PRIu64 "\n", io_unit);
 		assert(blob->back_bs_dev != NULL);
 		*lba = bs_io_unit_to_back_dev_lba(blob, io_unit);
 		*lba_count = bs_io_unit_to_back_dev_lba(blob, *lba_count);
 		return false;
 	} else {
+		SPDK_NOTICELOG("blob_calculate_lba_and_lba_count2: io_unit %" PRIu64 "\n", io_unit);
 		*lba = bs_blob_io_unit_to_lba(blob, io_unit);
 		return true;
 	}

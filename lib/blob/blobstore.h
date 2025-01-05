@@ -13,6 +13,7 @@
 #include "spdk/util.h"
 #include "spdk/tree.h"
 #include "spdk/thread.h"
+#include "spdk/log.h"
 
 #include "request.h"
 
@@ -605,9 +606,15 @@ bs_blob_io_unit_to_lba(struct spdk_blob *blob, uint64_t io_unit)
 
 	page = bs_io_unit_to_page(blob->bs, io_unit);
 
+	SPDK_NOTICELOG("bs_blob_io_unit_to_lba: page=%" PRIu64 "\n", page);
+
 	pages_per_cluster = blob->bs->pages_per_cluster;
+	SPDK_NOTICELOG("bs_blob_io_unit_to_lba: pages_per_cluster=%" PRIu64 "\n", pages_per_cluster);
 	shift = blob->bs->pages_per_cluster_shift;
+	SPDK_NOTICELOG("bs_blob_io_unit_to_lba: shift=%" PRIu8 "\n", shift);
 	io_units_per_page = bs_io_unit_per_page(blob->bs);
+
+	SPDK_NOTICELOG("bs_blob_io_unit_to_lba: io_units_per_page=%" PRIu64 "\n", io_units_per_page);
 
 	assert(page < blob->active.num_clusters * pages_per_cluster);
 
