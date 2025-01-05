@@ -2789,6 +2789,8 @@ blob_write_zeros_cpl(spdk_bs_sequence_t *seq, void *cb_arg, int bserrno)
 
 	cluster_number = bs_page_to_cluster(ctx->blob->bs, ctx->page);
 
+	SPDK_NOTICELOG("blob_write_zeros_cpl: cluster_number=%" PRIu32 "\n", cluster_number);
+
 	blob_insert_cluster_on_md_thread(ctx->blob, cluster_number, ctx->new_cluster,
 					 ctx->new_extent_page, ctx->new_cluster_page, blob_insert_cluster_cpl, ctx);
 }

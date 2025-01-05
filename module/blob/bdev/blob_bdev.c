@@ -232,6 +232,8 @@ bdev_blob_write_zeroes(struct spdk_bs_dev *dev, struct spdk_io_channel *channel,
 {
 	int rc;
 
+	SPDK_NOTICELOG("bdev_blob_write_zeroes: lba=%" PRIu64 ", lba_count=%" PRIu64 "\n", lba, lba_count);
+
 	rc = spdk_bdev_write_zeroes_blocks(__get_desc(dev), channel, lba,
 					   lba_count, bdev_blob_io_complete, cb_args);
 	if (rc == -ENOMEM) {

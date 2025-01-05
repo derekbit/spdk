@@ -45,6 +45,8 @@ blob_bs_dev_write_zeroes(struct spdk_bs_dev *dev, struct spdk_io_channel *channe
 			 uint64_t lba, uint64_t lba_count,
 			 struct spdk_bs_dev_cb_args *cb_args)
 {
+	SPDK_NOTICELOG("blob_bs_dev_write_zeroes: writing zeroes to %" PRIu64 " blocks at LBA %" PRIu64 "\n",
+ 		      lba_count, lba);
 	cb_args->cb_fn(cb_args->channel, cb_args->cb_arg, -EPERM);
 	assert(false);
 }

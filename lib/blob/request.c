@@ -270,7 +270,7 @@ bs_sequence_write_zeroes_dev(spdk_bs_sequence_t *seq,
 	struct spdk_bs_request_set      *set = (struct spdk_bs_request_set *)seq;
 	struct spdk_bs_channel       *channel = set->channel;
 
-	SPDK_DEBUGLOG(blob_rw, "writing zeroes to %" PRIu64 " blocks at LBA %" PRIu64 "\n",
+	SPDK_NOTICELOG("writing zeroes to %" PRIu64 " blocks at LBA %" PRIu64 "\n",
 		      lba_count, lba);
 
 	set->u.sequence.cb_fn = cb_fn;

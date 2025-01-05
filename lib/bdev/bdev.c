@@ -6370,6 +6370,9 @@ spdk_bdev_write_zeroes_blocks(struct spdk_bdev_desc *desc, struct spdk_io_channe
 		return -EBADF;
 	}
 
+	SPDK_NOTICELOG("bdev_write_zeroes_blocks: offset_blocks=%" PRIu64 " num_blocks=%" PRIu64 "\n",
+		       offset_blocks, num_blocks);
+
 	if (!bdev_io_valid_blocks(bdev, offset_blocks, num_blocks)) {
 		return -EINVAL;
 	}
@@ -9311,6 +9314,9 @@ bdev_write_zero_buffer(struct spdk_bdev_io *bdev_io)
 		md_buf = (char *)g_bdev_mgr.zero_buffer +
 			 spdk_bdev_get_block_size(bdev_io->bdev) * num_blocks;
 	}
+
+	SPDK_NOTICELOG("bdev_write_zero_buffer: offset_blocks=%" PRIu64 " num_blocks=%" PRIu64 "\n",
+		       bdev_io->u.bdev.offset_blocks, num_blocks);
 
 	return bdev_write_blocks_with_md(bdev_io->internal.desc,
 					 spdk_io_channel_from_ctx(bdev_io->internal.ch),
