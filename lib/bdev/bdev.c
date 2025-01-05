@@ -6377,10 +6377,16 @@ spdk_bdev_write_zeroes_blocks(struct spdk_bdev_desc *desc, struct spdk_io_channe
 		return -EINVAL;
 	}
 
+	SPDK_NOTICELOG("bdev_write_zeroes_blocks: bdev_io_valid_blocks offset_blocks=%" PRIu64 " num_blocks=%" PRIu64 "\n",
+		       offset_blocks, num_blocks);
+
 	if (!bdev_io_type_supported(bdev, SPDK_BDEV_IO_TYPE_WRITE_ZEROES) &&
 	    !bdev_io_type_supported(bdev, SPDK_BDEV_IO_TYPE_WRITE)) {
 		return -ENOTSUP;
 	}
+
+	SPDK_NOTICELOG("bdev_write_zeroes_blocks: bdev_channel_get_io offset_blocks=%" PRIu64 " num_blocks=%" PRIu64 "\n",
+		       offset_blocks, num_blocks);
 
 	bdev_io = bdev_channel_get_io(channel);
 
@@ -6404,6 +6410,12 @@ spdk_bdev_write_zeroes_blocks(struct spdk_bdev_desc *desc, struct spdk_io_channe
 	 * Then, send the write_zeroes request if SPDK_BDEV_IO_TYPE_WRITE_ZEROES is supported
 	 * or emulate it using regular write request otherwise.
 	 */
+
+
+	SPDK_NOTICELOG("bdev_write_zeroes_blocks: bdev_io_type_supported offset_blocks=%" PRIu64 " num_blocks=%" PRIu64 "\n",
+		       offset_blocks, num_blocks);
+
+
 	if (bdev_io_type_supported(bdev, SPDK_BDEV_IO_TYPE_WRITE_ZEROES) ||
 	    bdev_io->internal.f.split) {
 		bdev_io_submit(bdev_io);
@@ -6411,6 +6423,9 @@ spdk_bdev_write_zeroes_blocks(struct spdk_bdev_desc *desc, struct spdk_io_channe
 	}
 
 	assert(_bdev_get_block_size_with_md(bdev) <= ZERO_BUFFER_SIZE);
+
+	SPDK_NOTICELOG("bdev_write_zeroes_blocks: bdev_write_zero_buffer offset_blocks=%" PRIu64 " num_blocks=%" PRIu64 "\n",
+		       offset_blocks, num_blocks);
 
 	return bdev_write_zero_buffer(bdev_io);
 }
