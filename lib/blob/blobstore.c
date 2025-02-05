@@ -3186,6 +3186,9 @@ blob_request_submit_op_single(struct spdk_io_channel *_ch, struct spdk_blob *blo
 			return;
 		}
 
+		SPDK_NOTICELOG("Debug --> blob_request_submit_op_single: is_allocated=%d, lba=%" PRIu64 ", lba_count=%" PRIu64 "\n",
+			       is_allocated, lba, lba_count);
+
 		if (is_allocated) {
 			/* Read from the blob */
 			bs_batch_read_dev(batch, payload, lba, lba_count);
