@@ -395,7 +395,7 @@ bs_batch_read_dev(spdk_bs_batch_t *batch, void *payload,
 	struct spdk_bs_request_set	*set = (struct spdk_bs_request_set *)batch;
 	struct spdk_bs_channel		*channel = set->channel;
 
-	SPDK_DEBUGLOG(blob_rw, "Reading %" PRIu32 " blocks from LBA %" PRIu64 "\n", lba_count,
+	SPDK_NOTICELOG("Reading %" PRIu32 " blocks from LBA %" PRIu64 "\n", lba_count,
 		      lba);
 
 	set->u.batch.outstanding_ops++;
