@@ -292,7 +292,7 @@ static int
 raid_bdev_create_cb(void *io_device, void *ctx_buf)
 {
 	struct raid_bdev            *raid_bdev = io_device;
-	struct raid_bdev_io_channel *raid_ch = ctx_buf;
+	struct raid_bdev_io_channel *raid_ch = NULL;
 	uint8_t i;
 	int ret = -ENOMEM;
 
