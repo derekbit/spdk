@@ -426,6 +426,16 @@ blob_back_bs_destroy(struct spdk_blob *blob)
 	blob->back_bs_dev = NULL;
 }
 
+static void
+bs_snapshot_free_clusters_checksums(struct spdk_blob *blob)
+{
+	if (blob->clusters_checksums) {
+		blob->num_clusters_checksums = 0;
+		free(blob->clusters_checksums);
+		blob->clusters_checksums = NULL;
+	}
+}
+
 struct blob_parent {
 	union {
 		struct {
@@ -7324,6 +7334,9 @@ bs_inflate_blob_done(struct spdk_clone_snapshot_ctx *ctx)
 		_blob->back_bs_dev = bs_create_zeroes_dev();
 	}
 
+	/* Blob data has changed, so I remove clusters checksums */
+	bs_snapshot_free_clusters_checksums(_blob);
+
 	/* Temporarily override md_ro flag for MD modification */
 	_blob->md_ro = false;
 	blob_remove_xattr(_blob, BLOB_SNAPSHOT, true);
@@ -8204,16 +8217,6 @@ struct snapshot_checksum_ctx {
 };
 
 static void
-bs_snapshot_free_clusters_checksums(struct spdk_blob *blob)
-{
-	if (blob->clusters_checksums) {
-		blob->num_clusters_checksums = 0;
-		free(blob->clusters_checksums);
-		blob->clusters_checksums = NULL;
-	}
-}
-
-static void
 bs_snapshot_checksum_cleanup_finish(void *cb_arg, int bserrno)
 {
 	struct snapshot_checksum_ctx *ctx = cb_arg;
@@ -8899,6 +8902,10 @@ delete_snapshot_sync_snapshot_xattr_cpl(void *cb_arg, int bserrno)
 			}
 		}
 	}
+
+	/* Clone data has changed, so I remove clusters checksums */
+	bs_snapshot_free_clusters_checksums(ctx->clone);
+
 	ctx->next_extent_page = 0;
 	delete_snapshot_update_extent_pages(ctx, 0);
 }
