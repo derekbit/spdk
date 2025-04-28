@@ -531,6 +531,11 @@
       "max_count": 256
     },
     {
+      "name": "cluster_indexes",
+      "item_type": "uint64",
+      "max_count": 256
+    },
+    {
       "name": "bdev_iostat_names",
       "item_type": "string",
       "max_count": 1024
@@ -5474,6 +5479,30 @@
           "type": "uint32",
           "required": true,
           "description": "operation identifier"
+        }
+      ]
+    },
+    {
+      "name": "bdev_lvol_start_range_shallow_copy",
+      "params": [
+        {
+          "name": "src_lvol_name",
+          "type": "string",
+          "required": true,
+          "description": "UUID or alias of lvol to create a copy from"
+        },
+        {
+          "name": "dst_bdev_name",
+          "type": "string",
+          "required": true,
+          "description": "Name of the bdev that acts as destination for the copy"
+        },
+        {
+          "name": "clusters",
+          "type": "array",
+          "class": "cluster_indexes",
+          "required": false,
+          "description": "Array of indexes of the clusters to be synchronized"
         }
       ]
     },

@@ -5,6 +5,8 @@
 #  Copyright (c) 2022-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 #
 
+from functools import partial
+
 from spdk.rpc.cmd_parser import print_dict, print_json
 
 
@@ -213,6 +215,26 @@ def add_parser(subparsers):
     p = subparsers.add_parser('bdev_lvol_check_shallow_copy', help='Get shallow copy status')
     p.add_argument('operation_id', help='operation identifier', type=int)
     p.set_defaults(func=bdev_lvol_check_shallow_copy)
+
+    def bdev_lvol_start_range_shallow_copy(args):
+        clusters = None
+        if args.clusters:
+            clusters = []
+            for i in args.clusters:
+                clusters.append(int(i))
+        print_json(args.client.bdev_lvol_start_range_shallow_copy(
+                                                                src_lvol_name=args.src_lvol_name,
+                                                                dst_bdev_name=args.dst_bdev_name,
+                                                                clusters=clusters))
+
+    p = subparsers.add_parser('bdev_lvol_start_range_shallow_copy',
+                              help="""Start a range shallow copy of an lvol over a given bdev.  The
+    status of the operation can be obtained with bdev_lvol_check_shallow_copy""")
+    p.add_argument('src_lvol_name', help='source lvol name')
+    p.add_argument('dst_bdev_name', help='destination bdev name')
+    p.add_argument('--clusters', help="""Comma-separated list of clusters indexes. Example: 2,3,4""",
+                   type=partial(str.split, sep=','))
+    p.set_defaults(func=bdev_lvol_start_range_shallow_copy)
 
     def bdev_lvol_register_snapshot_range_checksums(args):
         args.client.bdev_lvol_register_snapshot_range_checksums(
