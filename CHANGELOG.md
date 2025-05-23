@@ -2,6 +2,13 @@
 
 ## v25.05: NVMe PCIe interrupt mode, DIF insert/strip, mlx5 accel platform driver
 
+### sock
+
+Changed the return behavior of `spdk_sock_flush`. The function now returns 0 on success, as relying
+on the number of bytes returned was not recommended.
+
+## v25.05
+
 ### accel_mlx5
 
 Added mlx5 platform driver capable of executing sequences of RDMA + crypto operations in one go.  It
