@@ -5445,7 +5445,19 @@ Performance tuning on the I/O workload could be done by estimating how many io_c
 threads and messager threads in Ceph side and how many cores would be reasonable to provide
 for SPDK to get up to your projections.
 
-#### Result
+ Name         | Optional   | Type       | Description
+------------- | ---------- | ---------- | --------------------------------------------------
+ name         | Optional   | string     | Bdev name
+ user_id      | Optional   | string     | Ceph ID (i.e. admin, not client.admin)
+ pool_name    | Required   | string     | Pool name
+ rbd_name     | Required   | string     | Image name
+ block_size   | Required   | number     | Block size
+ config       | Optional   | string map | Explicit librados configuration
+ cluster_name | Optional   | string     | Rados cluster object name created in this module.
+ uuid         | Optional   | string     | UUID of new bdev
+ read_only    | Optional   | boolean    | set rbd bdev as read-only
+
+#### Response
 
 Name of newly created bdev.
 
