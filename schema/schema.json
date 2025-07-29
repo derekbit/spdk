@@ -5524,6 +5524,17 @@
       ]
     },
     {
+      "name": "bdev_lvol_check_deep_copy",
+      "params": [
+        {
+          "name": "operation_id",
+          "type": "uint32",
+          "required": true,
+          "description": "operation identifier"
+        }
+      ]
+    },
+    {
       "name": "bdev_lvol_register_snapshot_checksum",
       "decoder": "rpc_bdev_snapshot_checksum_decoders",
       "params": [
