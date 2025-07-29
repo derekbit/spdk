@@ -5507,6 +5507,23 @@
       ]
     },
     {
+      "name": "bdev_lvol_start_deep_copy",
+      "params": [
+        {
+          "name": "src_lvol_name",
+          "type": "string",
+          "required": true,
+          "description": "UUID or alias of lvol to create a copy from"
+        },
+        {
+          "name": "dst_bdev_name",
+          "type": "string",
+          "required": true,
+          "description": "Name of the bdev that acts as destination for the copy"
+        }
+      ]
+    },
+    {
       "name": "bdev_lvol_register_snapshot_checksum",
       "decoder": "rpc_bdev_snapshot_checksum_decoders",
       "params": [
