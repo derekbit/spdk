@@ -129,6 +129,10 @@ struct spdk_accel_task {
 			struct iovec		*iovs;
 			uint32_t		iovcnt;
 		} s2;
+		struct {
+			void **dsts;
+			uint32_t cnt;
+		} ndsts;
 	};
 	union {
 		struct {
@@ -147,6 +151,9 @@ struct spdk_accel_task {
 			enum spdk_accel_comp_algo       algo; /* compresssion/decompression algorithm */
 			uint32_t                        level; /* compression alogrithm level */
 		} comp;
+		struct {
+			uint8_t *g_tbls;
+		} ec;
 	};
 	union {
 		uint32_t		*crc_dst;

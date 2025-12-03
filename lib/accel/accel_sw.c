@@ -18,6 +18,7 @@
 #include "spdk/util.h"
 #include "spdk/xor.h"
 #include "spdk/dif.h"
+#include "spdk/ec.h"
 
 #ifdef SPDK_CONFIG_HAVE_LZ4
 #include <lz4.h>
@@ -113,6 +114,7 @@ sw_accel_supports_opcode(enum spdk_accel_opcode opc)
 	case SPDK_ACCEL_OPC_DIF_VERIFY_COPY:
 	case SPDK_ACCEL_OPC_DIX_GENERATE:
 	case SPDK_ACCEL_OPC_DIX_VERIFY:
+	case SPDK_ACCEL_OPC_EC_ENCODE:
 		return true;
 	default:
 		return false;
@@ -616,6 +618,17 @@ _sw_accel_xor(struct sw_accel_io_channel *sw_ch, struct spdk_accel_task *accel_t
 }
 
 static int
+_sw_accel_ec_encode(struct sw_accel_io_channel *sw_ch, struct spdk_accel_task *accel_task)
+{
+	return spdk_ec_encode(accel_task->ndsts.dsts,
+					accel_task->ndsts.cnt,
+					accel_task->nsrcs.srcs,
+					accel_task->nsrcs.cnt,
+					accel_task->ec.g_tbls,
+					accel_task->nbytes);
+}
+
+static int
 _sw_accel_dif_verify(struct sw_accel_io_channel *sw_ch, struct spdk_accel_task *accel_task)
 {
 	return spdk_dif_verify(accel_task->s.iovs,
@@ -751,6 +764,9 @@ sw_accel_submit_tasks(struct spdk_io_channel *ch, struct spdk_accel_task *accel_
 			break;
 		case SPDK_ACCEL_OPC_XOR:
 			rc = _sw_accel_xor(sw_ch, accel_task);
+			break;
+		case SPDK_ACCEL_OPC_EC_ENCODE:
+			rc = _sw_accel_ec_encode(sw_ch, accel_task);
 			break;
 		case SPDK_ACCEL_OPC_ENCRYPT:
 			rc = _sw_accel_encrypt(sw_ch, accel_task);

@@ -56,7 +56,8 @@ enum spdk_accel_opcode {
 	SPDK_ACCEL_OPC_DIF_GENERATE_COPY	= 14,
 	SPDK_ACCEL_OPC_DIX_GENERATE		= 15,
 	SPDK_ACCEL_OPC_DIX_VERIFY		= 16,
-	SPDK_ACCEL_OPC_LAST			= 17,
+	SPDK_ACCEL_OPC_EC_ENCODE		= 17,
+	SPDK_ACCEL_OPC_LAST			= 18,
 };
 
 enum spdk_accel_cipher {
