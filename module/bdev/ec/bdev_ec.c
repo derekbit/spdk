@@ -141,83 +141,83 @@ static int
 _ec_bdev_create(const char *name, uint32_t strip_size, uint32_t k, uint32_t m,
 		const struct spdk_uuid *uuid, struct ec_bdev **ec_bdev_out)
 {
-    struct ec_bdev *ec;
-    struct spdk_bdev *ec_bdev_gen;
-    uint32_t num_base_bdevs = k + m;
+	struct ec_bdev *ec;
+	struct spdk_bdev *ec_bdev_gen;
+	uint32_t num_base_bdevs = k + m;
 
-    /* 1. Validation */
-    if (strnlen(name, EC_BDEV_SB_NAME_SIZE) == EC_BDEV_SB_NAME_SIZE) {
-        SPDK_ERRLOG("EC bdev name '%s' exceeds %d characters\n", name, EC_BDEV_SB_NAME_SIZE - 1);
-        return -EINVAL;
-    }
+	// Validate input parameters
+	if (strnlen(name, EC_BDEV_SB_NAME_SIZE) == EC_BDEV_SB_NAME_SIZE) {
+		SPDK_ERRLOG("EC bdev name '%s' exceeds %d characters\n", name, EC_BDEV_SB_NAME_SIZE - 1);
+		return -EINVAL;
+	}
 
-    if (spdk_bdev_get_by_name(name) != NULL) {
-        SPDK_ERRLOG("Duplicate EC bdev name found: %s\n", name);
-        return -EEXIST;
-    }
+	if (spdk_bdev_get_by_name(name) != NULL) {
+		SPDK_ERRLOG("Duplicate EC bdev name found: %s\n", name);
+		return -EEXIST;
+	}
 
-    if (k == 0 || m == 0) {
-        SPDK_ERRLOG("Invalid EC geometry k=%u, m=%u\n", k, m);
-        return -EINVAL;
-    }
+	if (k == 0 || m == 0) {
+		SPDK_ERRLOG("Invalid EC geometry k=%u, m=%u\n", k, m);
+		return -EINVAL;
+	}
 
-    if (num_base_bdevs > EC_MAX_BASE_BDEVS) {
-        SPDK_ERRLOG("Too many base bdevs %u (max %d)\n", num_base_bdevs, EC_MAX_BASE_BDEVS);
-        return -EINVAL;
-    }
+	if (num_base_bdevs > EC_MAX_BASE_BDEVS) {
+		SPDK_ERRLOG("Too many base bdevs %u (max %d)\n", num_base_bdevs, EC_MAX_BASE_BDEVS);
+		return -EINVAL;
+	}
 
-    if (strip_size == 0 || spdk_u32_is_pow2(strip_size) == false) {
-        SPDK_ERRLOG("Invalid strip size %" PRIu32 "\n", strip_size);
-        return -EINVAL;
-    }
+	if (strip_size == 0 || spdk_u32_is_pow2(strip_size) == false) {
+		SPDK_ERRLOG("Invalid strip size %" PRIu32 "\n", strip_size);
+		return -EINVAL;
+	}
 
-    /* 2. Allocation */
-    ec = calloc(1, sizeof(*ec));
-    if (!ec) {
-        SPDK_ERRLOG("Unable to allocate memory for ec bdev\n");
-        return -ENOMEM;
-    }
+	// Allocate and initialize ec_bdev structure
+	ec = calloc(1, sizeof(*ec));
+	if (!ec) {
+		SPDK_ERRLOG("Unable to allocate memory for ec bdev\n");
+		return -ENOMEM;
+	}
 
-    ec->k = k;
-    ec->m = m;
-    ec->n = num_base_bdevs;
+	ec->k = k;
+	ec->m = m;
+	ec->n = num_base_bdevs;
     
-    /* Store KB for now; actual block count is calculated after opening base bdevs */
-    ec->strip_size_kb = strip_size; 
+	/* Store KB for now; actual block count is calculated after opening base bdevs */
+	ec->strip_size_kb = strip_size; 
 
-    /* Initialize ISA-L tables (Pre-calculation for performance) */
-    if (bdev_ec_init_isa_l_tables(ec) != 0) {
-        SPDK_ERRLOG("Unable to initialize ISA-L tables\n");
-        ec_bdev_free(ec);
-        return -ENOMEM;
-    }
+	/* Initialize ISA-L tables (Pre-calculation for performance) */
+	if (bdev_ec_init_isa_l_tables(ec) != 0) {
+		SPDK_ERRLOG("Unable to initialize ISA-L tables\n");
+		ec_bdev_free(ec);
+		return -ENOMEM;
+	}
 
-    ec_bdev_gen = &ec->bdev;
+	ec_bdev_gen = &ec->bdev;
 
-    ec_bdev_gen->name = strdup(name);
-    if (!ec_bdev_gen->name) {
-        SPDK_ERRLOG("Unable to allocate name for ec bdev\n");
-        ec_bdev_free(ec);
-        return -ENOMEM;
-    }
+	ec_bdev_gen->name = strdup(name);
+	if (!ec_bdev_gen->name) {
+		SPDK_ERRLOG("Unable to allocate name for ec bdev\n");
+		ec_bdev_free(ec);
+		return -ENOMEM;
+	}
 
-    ec_bdev_gen->product_name = "ErasureCode";
-    ec_bdev_gen->ctxt = ec;
-    ec_bdev_gen->fn_table = &g_ec_fn_table;
-    ec_bdev_gen->module = &ec_if; /* Using the module interface defined previously */
-    ec_bdev_gen->write_cache = 0;
+	ec_bdev_gen->product_name = "ErasureCode Volume";
+	ec_bdev_gen->ctxt = ec;
+	ec_bdev_gen->fn_table = &g_ec_fn_table;
+	ec_bdev_gen->module = &ec_if; /* Using the module interface defined previously */
+	ec_bdev_gen->write_cache = 0;
     
-    /* Handle UUID: Copy if provided, otherwise leave it to the caller */
-    if (uuid) {
-        spdk_uuid_copy(&ec_bdev_gen->uuid, uuid);
-    }
+	/* Handle UUID: Copy if provided, otherwise leave it to the caller */
+	if (uuid) {
+		spdk_uuid_copy(&ec_bdev_gen->uuid, uuid);
+	}
 
-    /* 5. Add to Global List */
-    TAILQ_INSERT_TAIL(&g_ec_bdevs, ec, link);
+	// Add to global list
+	TAILQ_INSERT_TAIL(&g_ec_bdevs, ec, link);
 
-    *ec_bdev_out = ec;
+	*ec_bdev_out = ec;
 
-    return 0;
+	return 0;
 }
 
 /*
@@ -313,29 +313,45 @@ ec_destroy_ch(void *io_device, void *ctx_buf)
 }
 
 /*
+ * Event Callback for base bdevs.
+ * SPDK requires this if we open the bdev for writing.
+ */
+static void
+ec_base_bdev_event_cb(enum spdk_bdev_event_type type, struct spdk_bdev *bdev, void *event_ctx)
+{
+    struct ec_bdev *ec = event_ctx;
+
+    switch (type) {
+    case SPDK_BDEV_EVENT_REMOVE:
+        SPDK_NOTICELOG("Base bdev %s removed from EC bdev %s\n", 
+                       spdk_bdev_get_name(bdev), ec->bdev.name);
+        /* * TODO: Handle Hot Removal
+         * In a real implementation, we would mark the disk as missing/faulty here.
+         * For this simple demo, we might just unregister the EC bdev.
+         */
+        break;
+    default:
+        SPDK_NOTICELOG("Received event %d from base bdev %s\n", type, spdk_bdev_get_name(bdev));
+        break;
+    }
+}
+
+/*
  * Public API: ec_bdev_create
  *
- * Allocates an EC bdev based on passed configuration, opens underlying
- * base devices, calculates geometry, and registers the bdev.
- *
- * \param name Name for the new EC bdev.
- * \param strip_size_kb Strip size in Kilobytes.
- * \param k Number of data chunks.
- * \param m Number of parity chunks.
- * \param base_bdev_names Array of base bdev names.
- * \param uuid UUID to set for the bdev (optional, can be NULL).
- * \return 0 on success, non-zero on failure.
+ * Allocates, initializes, and registers the EC Bdev.
  */
 int
-ec_bdev_create(const char *name, uint32_t strip_size, uint32_t k, uint32_t m,
+ec_bdev_create(const char *name, uint32_t strip_size_kb, uint32_t k, uint32_t m,
 	       const char **base_bdev_names, const struct spdk_uuid *uuid)
 {
 	struct ec_bdev *ec;
 	struct spdk_bdev *base_bdev;
 	uint32_t i;
 	int rc;
+	bool io_device_registered = false; /* Flag to track registration status */
 
-	rc = _ec_bdev_create(name, strip_size, k, m, uuid, &ec);
+	rc = _ec_bdev_create(name, strip_size_kb, k, m, uuid, &ec);
 	if (rc != 0) {
 		return rc;
 	}
@@ -345,13 +361,19 @@ ec_bdev_create(const char *name, uint32_t strip_size, uint32_t k, uint32_t m,
 	}
 
 	for (i = 0; i < ec->n; i++) {
-		rc = spdk_bdev_open_ext(base_bdev_names[i], true, NULL, NULL, &ec->descs[i]);
+		SPDK_NOTICELOG("Opening base bdev %s for EC bdev %s\n", base_bdev_names[i], name);
+
+		/*
+		 * FIX: Pass 'ec_base_bdev_event_cb' and 'ec' (context).
+		 * This is required because we set write_desc=true.
+		 */
+		rc = spdk_bdev_open_ext(base_bdev_names[i], true, ec_base_bdev_event_cb, ec, &ec->descs[i]);
 		if (rc != 0) {
 			SPDK_ERRLOG("Failed to open base bdev %s: %s\n", base_bdev_names[i], spdk_strerror(-rc));
 			goto error_cleanup;
 		}
-        
-		/* Validate Geometry (Block Length) */
+
+		/* Validate Geometry: Block length must match */
 		base_bdev = spdk_bdev_desc_get_bdev(ec->descs[i]);
 		if (i == 0) {
 			ec->bdev.blocklen = base_bdev->blocklen;
@@ -362,31 +384,33 @@ ec_bdev_create(const char *name, uint32_t strip_size, uint32_t k, uint32_t m,
 		}
 	}
 
-	/* 4. Calculate Final Geometry */
+	/* Calculate Final Geometry */
 	/* Convert strip size from KB to blocks */
 	ec->strip_size = (ec->strip_size_kb * 1024) / ec->bdev.blocklen;
-    
+
 	/* Calculate full stripe data size (k * strip_size) */
 	ec->stripe_blocks = ec->k * ec->strip_size;
-    
-	/* Calculate total block count based on the first base device */
+
+	/* Calculate total capacity based on the first disk */
+	/* Note: Real implementation might handle mixed disk sizes by picking the smallest */
 	base_bdev = spdk_bdev_desc_get_bdev(ec->descs[0]);
 	ec->bdev.blockcnt = (base_bdev->blockcnt / ec->strip_size) * ec->stripe_blocks;
-    
+
 	/* Set Constraints for Full Stripe Writes */
 	ec->bdev.write_unit_size = ec->stripe_blocks;
 	ec->bdev.optimal_io_boundary = ec->strip_size;
 	ec->bdev.split_on_write_unit = true;
 	ec->bdev.split_on_optimal_io_boundary = true;
 
-	/* 5. Register Bdev */
-	spdk_io_device_register(ec, ec_create_ch, ec_destroy_ch, 
+	/* 5. Register IO Device */
+	spdk_io_device_register(ec, ec_create_ch, ec_destroy_ch,
 				sizeof(struct ec_io_channel), name);
+	io_device_registered = true; /* Mark as registered to enable safe cleanup */
 
+	/* 6. Register Bdev */
 	rc = spdk_bdev_register(&ec->bdev);
 	if (rc != 0) {
 		SPDK_ERRLOG("Failed to register bdev\n");
-		spdk_io_device_unregister(ec, NULL);
 		goto error_cleanup;
 	}
 
@@ -394,20 +418,22 @@ ec_bdev_create(const char *name, uint32_t strip_size, uint32_t k, uint32_t m,
 	return 0;
 
 error_cleanup:
-	/* Unregister IO device if registration failed */
-	spdk_io_device_unregister(ec, NULL); 
-    
+	/* FIX: Only unregister if we actually registered it */
+	if (io_device_registered) {
+		spdk_io_device_unregister(ec, NULL);
+	}
+
 	/* Close opened descriptors */
 	for (i = 0; i < ec->n; i++) {
 		if (ec->descs[i]) {
 			spdk_bdev_close(ec->descs[i]);
 		}
 	}
-    
+
 	/* Remove from list and free memory */
 	TAILQ_REMOVE(&g_ec_bdevs, ec, link);
 	ec_bdev_free(ec);
-    
+
 	return rc;
 }
 
@@ -483,8 +509,8 @@ ec_dump_info_json(void *ctx, struct spdk_json_write_ctx *w)
 
 	spdk_json_write_named_object_begin(w, "ec");
 
-	spdk_json_write_named_uint32(w, "k", ec->k);
-	spdk_json_write_named_uint32(w, "m", ec->m);
+	spdk_json_write_named_uint32(w, "data_chunk_count", ec->k);
+	spdk_json_write_named_uint32(w, "parity_chunk_count", ec->m);
 	spdk_json_write_named_uint32(w, "strip_size_kb", ec->strip_size_kb);
 	spdk_json_write_named_uint32(w, "num_base_bdevs", ec->n);
 
@@ -521,8 +547,8 @@ ec_write_config_json(struct spdk_bdev *bdev, struct spdk_json_write_ctx *w)
 
 	spdk_json_write_named_object_begin(w, "params");
 	spdk_json_write_named_string(w, "name", bdev->name);
-	spdk_json_write_named_uint32(w, "k", ec->k);
-	spdk_json_write_named_uint32(w, "m", ec->m);
+	spdk_json_write_named_uint32(w, "data_chunk_count", ec->k);
+	spdk_json_write_named_uint32(w, "parity_chunk_count", ec->m);
 	spdk_json_write_named_uint32(w, "strip_size_kb", ec->strip_size_kb);
 
 	spdk_json_write_named_array_begin(w, "base_bdevs");
@@ -811,18 +837,12 @@ error:
 	return rc;
 }
 
-/*
- * Main I/O Entry Point.
- * Matches the pattern used in raid_bdev_submit_request.
- */
 static void
 ec_submit_request(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io)
 {
-	/* 1. Cast driver_ctx to our private structure type */
 	struct ec_bdev_io *ec_io = (struct ec_bdev_io *)bdev_io->driver_ctx;
 	struct ec_io_channel *ec_ch = spdk_io_channel_get_ctx(ch);
 
-	/* 2. Initialize the context (Zero-copy / Zero-malloc) */
 	ec_bdev_io_init(ec_io, ec_ch, bdev_io);
 
 	/* * Optional: Add tracing here 
@@ -865,9 +885,7 @@ ec_submit_request(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io)
 	}
 }
 
-/*
- * The Function Table Definition
- */
+/* g_ec_fn_table is the function table for ec bdev */
 static const struct spdk_bdev_fn_table g_ec_fn_table = {
 	.destruct           = ec_destruct,
 	.submit_request     = ec_submit_request, /* Implemented in previous steps */

@@ -365,6 +365,31 @@ def bdev_null_resize(client, name, new_size):
     return client.call('bdev_null_resize', params)
 
 
+def bdev_ec_create(client, name, data_chunk_count, parity_chunk_count, base_bdevs, strip_size_kb=None, uuid=None):
+    """Create erasure coding bdev. Either strip size arg will work but one is required.
+    Args:
+        name: user defined ec bdev name
+        data_chunk_count: number of data blocks
+        parity_chunk_count: number of coding blocks
+        base_bdevs: Space separated names of Nvme bdevs in double quotes, like "Nvme0n1 Nvme1n1 Nvme2n1"
+        strip_size_kb: strip size of ec bdev in KB, supported values like 8, 16, 32, 64, 128, 256, etc
+        uuid: UUID for this ec bdev (optional)
+    Returns:
+        None
+    """
+    params = dict()
+    params['name'] = name
+    params['data_chunk_count'] = data_chunk_count
+    params['parity_chunk_count'] = parity_chunk_count
+    params['base_bdevs'] = base_bdevs
+    if strip_size_kb is not None:
+        params['strip_size_kb'] = strip_size_kb
+    if uuid is not None:
+        params['uuid'] = uuid
+
+    return client.call('bdev_ec_create', params)
+
+
 def bdev_raid_set_options(client, process_window_size_kb=None, process_max_bandwidth_mb_sec=None):
     """Set options for bdev raid.
     Args:

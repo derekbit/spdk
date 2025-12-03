@@ -2380,6 +2380,27 @@ Format: 'user:u1 secret:s1 muser:mu1 msecret:ms1,user:u2 secret:s2 muser:mu2 mse
     p.add_argument('-l', '--lvs-name', help='only lvols in lvol store name')
     p.set_defaults(func=bdev_lvol_get_lvols)
 
+    def bdev_ec_create(args):
+        base_bdevs = []
+        for u in args.base_bdevs.strip().split():
+            base_bdevs.append(u)
+
+        rpc.bdev.bdev_ec_create(args.client,
+                                name=args.name,
+                                data_chunk_count=args.data_chunk_count,
+                                parity_chunk_count=args.parity_chunk_count,
+                                base_bdevs=base_bdevs,
+				strip_size_kb=args.strip_size_kb,
+				uuid=args.uuid)
+    p = subparsers.add_parser('bdev_ec_create', help='Create new ec bdev')
+    p.add_argument('-n', '--name', help='ec bdev name', required=True)
+    p.add_argument('-d', '--data-chunk-count', help='number of data chunks', type=int, required=True)
+    p.add_argument('-p', '--parity-chunk-count', help='number of parity chunks', type=int, required=True)
+    p.add_argument('-b', '--base-bdevs', help='base bdevs name, whitespace separated list in quotes', required=True)
+    p.add_argument('-z', '--strip-size-kb', help='strip size in KB', type=int)
+    p.add_argument('--uuid', help='UUID for this ec bdev')
+    p.set_defaults(func=bdev_ec_create)
+
     def bdev_raid_set_options(args):
         rpc.bdev.bdev_raid_set_options(args.client,
                                        process_window_size_kb=args.process_window_size_kb,

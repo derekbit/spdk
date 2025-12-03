@@ -17,12 +17,12 @@
  * Structure to hold parameters decoded from the JSON RPC request.
  */
 struct rpc_bdev_ec_create {
-    char *name;                          /* Name of the EC bdev */
-    char *base_bdevs[EC_MAX_BASE_BDEVS]; /* Array of base bdev names */
-    size_t num_base_bdevs;               /* Count of base bdevs */
-    uint32_t k;                          /* Number of data chunks */
-    uint32_t m;                          /* Number of parity chunks */
-    uint32_t strip_size_kb;              /* Strip size in KB */
+	char *name;                          /* Name of the EC bdev */
+	char *base_bdevs[EC_MAX_BASE_BDEVS]; /* Array of base bdev names */
+	size_t num_base_bdevs;               /* Count of base bdevs */
+	uint32_t k;                          /* Number of data chunks */
+	uint32_t m;                          /* Number of parity chunks */
+	uint32_t strip_size_kb;              /* Strip size in KB */
 };
 
 /*
@@ -31,12 +31,12 @@ struct rpc_bdev_ec_create {
 static void
 free_rpc_bdev_ec_create(struct rpc_bdev_ec_create *req)
 {
-    size_t i;
+	size_t i;
 
-    free(req->name);
-    for (i = 0; i < req->num_base_bdevs; i++) {
-        free(req->base_bdevs[i]);
-    }
+	free(req->name);
+	for (i = 0; i < req->num_base_bdevs; i++) {
+		free(req->base_bdevs[i]);
+	}
 }
 
 /*
@@ -45,8 +45,8 @@ free_rpc_bdev_ec_create(struct rpc_bdev_ec_create *req)
 static int
 decode_base_bdevs(const struct spdk_json_val *val, void *out)
 {
-    struct rpc_bdev_ec_create *req = out;
-    return spdk_json_decode_array(val, spdk_json_decode_string, req->base_bdevs,
+	struct rpc_bdev_ec_create *req = out;
+	return spdk_json_decode_array(val, spdk_json_decode_string, req->base_bdevs,
                                   EC_MAX_BASE_BDEVS, &req->num_base_bdevs, sizeof(char *));
 }
 
@@ -54,11 +54,11 @@ decode_base_bdevs(const struct spdk_json_val *val, void *out)
  * Decoder object for RPC bdev_ec_create
  */
 static const struct spdk_json_object_decoder rpc_bdev_ec_create_decoders[] = {
-    {"name", offsetof(struct rpc_bdev_ec_create, name), spdk_json_decode_string},
-    {"base_bdevs", offsetof(struct rpc_bdev_ec_create, base_bdevs), decode_base_bdevs},
-    {"k", offsetof(struct rpc_bdev_ec_create, k), spdk_json_decode_uint32},
-    {"m", offsetof(struct rpc_bdev_ec_create, m), spdk_json_decode_uint32},
-    {"strip_size_kb", offsetof(struct rpc_bdev_ec_create, strip_size_kb), spdk_json_decode_uint32},
+	{"name", offsetof(struct rpc_bdev_ec_create, name), spdk_json_decode_string},
+	{"base_bdevs", 0, decode_base_bdevs}, 
+	{"data_chunk_count", offsetof(struct rpc_bdev_ec_create, k), spdk_json_decode_uint32},
+	{"parity_chunk_count", offsetof(struct rpc_bdev_ec_create, m), spdk_json_decode_uint32},
+	{"strip_size_kb", offsetof(struct rpc_bdev_ec_create, strip_size_kb), spdk_json_decode_uint32, true},
 };
 
 /*
@@ -85,6 +85,8 @@ rpc_bdev_ec_create(struct spdk_jsonrpc_request *request, const struct spdk_json_
 						 "spdk_json_decode_object failed");
 		goto cleanup;
 	}
+
+	printf("Debug ---> req.num_base_bdevs=%d\n", req.num_base_bdevs);
 
 	if (req.num_base_bdevs != (req.k + req.m)) {
 		SPDK_ERRLOG("Base bdevs count (%lu) does not match k+m (%u+%u)\n", 
