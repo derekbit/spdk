@@ -129,13 +129,6 @@ bdev_ec_init_isa_l_tables(struct ec_bdev *ec)
 
 /*
  * Internal function: _ec_bdev_create
- * * Responsibilities:
- * 1. Validate input parameters (name, geometry, strip size).
- * 2. Allocate memory for the ec_bdev structure.
- * 3. Initialize ISA-L tables.
- * 4. Initialize generic spdk_bdev properties.
- * 5. Add to the global list.
- * * Note: This function does NOT register the bdev or open base devices.
  */
 static int
 _ec_bdev_create(const char *name, uint32_t strip_size, uint32_t k, uint32_t m,
@@ -238,7 +231,7 @@ ec_create_ch(void *io_device, void *ctx_buf)
 	struct ec_io_channel *ec_ch = ctx_buf;
 	uint32_t i;
 
-	/* * 1. Get the Acceleration Framework Channel.
+	/* Get the Acceleration Framework Channel.
 	 * Even if we use synchronous ISA-L currently, keeping this allows
 	 * future expansion for hardware offload (DSA) or other accel ops.
 	 */
@@ -249,7 +242,7 @@ ec_create_ch(void *io_device, void *ctx_buf)
 	}
 
 	/*
-	 * 2. Get IO channels for all underlying base bdevs.
+	 * Get IO channels for all underlying base bdevs.
 	 * This ensures that when this thread submits IO to disk 0, 1, ... n,
 	 * it uses a lock-free channel specific to this thread.
 	 */
@@ -297,7 +290,7 @@ ec_destroy_ch(void *io_device, void *ctx_buf)
 	struct ec_io_channel *ec_ch = ctx_buf;
 	uint32_t i;
 
-	/* 1. Release all base bdev channels */
+	/* Release all base bdev channels */
 	for (i = 0; i < ec->n; i++) {
 		if (ec_ch->base_chans[i]) {
 			spdk_put_io_channel(ec_ch->base_chans[i]);
@@ -305,7 +298,7 @@ ec_destroy_ch(void *io_device, void *ctx_buf)
 		}
 	}
 
-	/* 2. Release the accel channel */
+	/* Release the accel channel */
 	if (ec_ch->accel_ch) {
 		spdk_put_io_channel(ec_ch->accel_ch);
 		ec_ch->accel_ch = NULL;
@@ -402,12 +395,12 @@ ec_bdev_create(const char *name, uint32_t strip_size_kb, uint32_t k, uint32_t m,
 	ec->bdev.split_on_write_unit = true;
 	ec->bdev.split_on_optimal_io_boundary = true;
 
-	/* 5. Register IO Device */
+	/* Register IO Device */
 	spdk_io_device_register(ec, ec_create_ch, ec_destroy_ch,
 				sizeof(struct ec_io_channel), name);
 	io_device_registered = true; /* Mark as registered to enable safe cleanup */
 
-	/* 6. Register Bdev */
+	/* Register Bdev */
 	rc = spdk_bdev_register(&ec->bdev);
 	if (rc != 0) {
 		SPDK_ERRLOG("Failed to register bdev\n");
@@ -565,63 +558,105 @@ ec_write_config_json(struct spdk_bdev *bdev, struct spdk_json_write_ctx *w)
 }
 
 /*
- * Helper to initialize the ec_bdev_io structure.
- * Since driver_ctx memory is reused from a pool, it may contain garbage data.
+ * ec_bdev_io_init
+ *
+ * Initializes the ec_bdev_io structure.
+ * This is called on the hot path for every I/O.
+ *
+ * \param ec_io   Pointer to the driver_ctx memory.
+ * \param ch      The thread-local channel.
+ * \param bdev_io The parent I/O request.
  */
 static inline void
 ec_bdev_io_init(struct ec_bdev_io *ec_io, struct ec_io_channel *ch,
-		struct spdk_bdev_io *bdev_io)
+                struct spdk_bdev_io *bdev_io)
 {
-	/* * Clear the memory. 
-	 * Optimization: Only clear fields that aren't immediately overwritten.
+	/*
+	 * OPTIMIZATION: Do not use memset(ec_io, 0, sizeof(*ec_io)).
+	 * Since this memory comes from a pre-allocated pool, we only need to
+	 * overwrite fields we actually use or need to reset.
+	 * Direct assignment is faster than memset.
 	 */
-	memset(ec_io, 0, sizeof(*ec_io));
 
+	/* Setup Links */
 	ec_io->bdev_io = bdev_io;
 	ec_io->ch = ch;
+
+	/* Copy Parameters to Private Workspace */
+	ec_io->offset_blocks = bdev_io->u.bdev.offset_blocks;
+	ec_io->num_blocks = bdev_io->u.bdev.num_blocks;
+	ec_io->iovs = bdev_io->u.bdev.iovs;
+	ec_io->iovcnt = bdev_io->u.bdev.iovcnt;
+
+	/* Reset State & Counters */
+	ec_io->base_io_remaining = 0;
 	ec_io->status = SPDK_BDEV_IO_STATUS_SUCCESS;
+
+	/* Nullify Resource Pointers
+	 * This is crucial because driver_ctx memory is reused.
+	 * If we don't NULL these, the completion handler might try to
+	 * double-free garbage pointers from a previous I/O.
+	 */
+	ec_io->data_iovs = NULL;
+	ec_io->parity_iovs = NULL;
+	ec_io->parity_bufs = NULL;
 }
 
 /*
- * Completion callback for child I/Os (reads/writes to base devices).
+ * ec_child_io_complete
+ *
+ * Callback function called by SPDK when a read/write to a base bdev completes.
+ *
+ * \param child_io  The child I/O that just completed.
+ * \param success   True if the child I/O succeeded, false otherwise.
+ * \param cb_arg    The context (struct ec_bdev_io *) passed during submission.
  */
 static void
-ec_child_io_complete(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg)
+ec_child_io_complete(struct spdk_bdev_io *child_io, bool success, void *cb_arg)
 {
-	struct ec_bdev_io *ec_io = cb_arg;
-	struct ec_bdev *ec = (struct ec_bdev *)ec_io->bdev_io->bdev->ctxt;
+    struct ec_bdev_io *ec_io = cb_arg;
+    struct ec_bdev *ec = (struct ec_bdev *)ec_io->bdev_io->bdev->ctxt;
+    uint32_t i;
 
-	/* Free the child I/O (the read/write to the underlying disk) */
-	spdk_bdev_free_io(bdev_io);
+    spdk_bdev_free_io(child_io);
 
-	if (!success) {
-		ec_io->status = SPDK_BDEV_IO_STATUS_FAILED;
-	}
+    if (!success) {
+        ec_io->status = SPDK_BDEV_IO_STATUS_FAILED;
+    }
 
-	/* Decrement the counter for pending child I/Os */
-	ec_io->outstanding_ios--;
+    ec_io->base_io_remaining--;
 
-	if (ec_io->outstanding_ios == 0) {
-		/* * All child I/Os are done. Cleanup resources allocated *during* the I/O process.
-		 * * Note: We only free buffers we explicitly malloc'd (like parity buffers).
-		 * We DO NOT free ec_io itself.
-		 */
-		if (ec_io->parity_bufs) {
-			for (uint32_t i = 0; i < ec->m; i++) {
-				spdk_dma_free(ec_io->parity_bufs[i]);
-			}
-			free(ec_io->parity_bufs);
-			free(ec_io->parity_iovs);
-		}
-		if (ec_io->data_iovs) {
-			free(ec_io->data_iovs);
-		}
+    if (ec_io->base_io_remaining == 0) {
+        
+        /* Free Bounce Buffer */
+        if (ec_io->bounce_buf) {
+            spdk_dma_free(ec_io->bounce_buf);
+            ec_io->bounce_buf = NULL;
+        }
 
-		/* * Complete the parent I/O. 
-		 * This returns the bdev_io (and our embedded ec_io) to the SPDK memory pool.
-		 */
-		spdk_bdev_io_complete(ec_io->bdev_io, ec_io->status);
-	}
+        /* Free Parity Resources */
+        if (ec_io->parity_bufs) {
+            for (i = 0; i < ec->m; i++) {
+                if (ec_io->parity_bufs[i]) {
+                    spdk_dma_free(ec_io->parity_bufs[i]);
+                }
+            }
+            free(ec_io->parity_bufs);
+            ec_io->parity_bufs = NULL;
+        }
+
+        if (ec_io->parity_iovs) {
+            free(ec_io->parity_iovs);
+            ec_io->parity_iovs = NULL;
+        }
+
+        if (ec_io->data_iovs) {
+            free(ec_io->data_iovs);
+            ec_io->data_iovs = NULL;
+        }
+
+        spdk_bdev_io_complete(ec_io->bdev_io, ec_io->status);
+    }
 }
 
 /*
@@ -638,11 +673,16 @@ static int
 ec_submit_read(struct ec_bdev_io *ec_io)
 {
 	struct ec_bdev *ec = (struct ec_bdev *)ec_io->bdev_io->bdev->ctxt;
-	struct spdk_bdev_io *bdev_io = ec_io->bdev_io;
-	uint64_t offset_blocks = bdev_io->u.bdev.offset_blocks;
-	uint64_t num_blocks = bdev_io->u.bdev.num_blocks;
 
-	/* 1. Calculate Geometry */
+	/*
+	 * USE PRIVATE COPY:
+	 * We use the parameters stored in our private ec_io structure.
+	 * This decouples our logic from the parent bdev_io.
+	 */
+	uint64_t offset_blocks = ec_io->offset_blocks;
+	uint64_t num_blocks = ec_io->num_blocks;
+
+	/* Calculate Geometry */
 	/* Which logical stripe are we in? */
 	uint64_t stripe_index = offset_blocks / ec->stripe_blocks;
 
@@ -656,20 +696,19 @@ ec_submit_read(struct ec_bdev_io *ec_io)
 	uint64_t chunk_offset = stripe_offset % ec->strip_size;
 
 	/* Calculate physical LBA on the underlying base device */
-	/* Logic: (Current Stripe Index * Strip Size) + Offset in Chunk */
 	uint64_t base_lba = (stripe_index * ec->strip_size) + chunk_offset;
 
-	/* 2. Setup Tracking */
-	/* We expect exactly 1 child IO completion */
-	ec_io->outstanding_ios = 1;
+	/* Setup Tracking */
+	/* We expect exactly 1 child IO completion for a normal read */
+	ec_io->base_io_remaining = 1;
 	ec_io->status = SPDK_BDEV_IO_STATUS_SUCCESS;
 
-	/* 3. Submit Pass-through Read */
-	/* Note: We pass the user's iovs directly to the base bdev */
+	/* Submit Pass-through Read */
+	/* Note: We pass ec_io->iovs and ec_io->iovcnt */
 	int rc = spdk_bdev_readv_blocks(ec->descs[chunk_idx],
 					ec_io->ch->base_chans[chunk_idx],
-					bdev_io->u.bdev.iovs,
-					bdev_io->u.bdev.iovcnt,
+					ec_io->iovs,
+					ec_io->iovcnt,
 					base_lba,
 					num_blocks,
 					ec_child_io_complete,
@@ -683,205 +722,183 @@ ec_submit_read(struct ec_bdev_io *ec_io)
  *
  * Handles Write Requests.
  * Strategy: Full Stripe Write Only.
- *
- * 1. Validate alignment.
- * 2. Allocate Parity Buffers.
- * 3. Encode (User Data -> Parity Buffers).
- * 4. Write all Data and Parity chunks to disks.
  */
 static int
 ec_submit_write(struct ec_bdev_io *ec_io)
 {
-	struct ec_bdev *ec = (struct ec_bdev *)ec_io->bdev_io->bdev->ctxt;
-	struct spdk_bdev_io *bdev_io = ec_io->bdev_io;
-	uint32_t i;
-	int rc = 0;
+    struct ec_bdev *ec = (struct ec_bdev *)ec_io->bdev_io->bdev->ctxt;
+    uint32_t i;
+    int rc = 0;
 
-	/* Calculate chunk size in bytes */
-	uint64_t chunk_blocks = ec->strip_size;
-	uint64_t chunk_bytes = chunk_blocks * ec->bdev.blocklen;
+    uint64_t chunk_blocks = ec->strip_size;
+    uint64_t chunk_bytes = chunk_blocks * ec->bdev.blocklen;
+    uint64_t total_data_bytes = ec->stripe_blocks * ec->bdev.blocklen;
 
-	/* 1. Validate Full Stripe Write */
-	if (bdev_io->u.bdev.num_blocks != ec->stripe_blocks) {
-		SPDK_ERRLOG("Write IO must be full stripe (expected %u blocks, got %lu)\n",
-			    ec->stripe_blocks, bdev_io->u.bdev.num_blocks);
-		return -EINVAL;
-	}
+    if (ec_io->num_blocks != ec->stripe_blocks) {
+        SPDK_ERRLOG("Write IO must be full stripe size\n");
+        return -EINVAL;
+    }
 
-	/*
-	 * Limitation for this Demo:
-	 * We assume the user buffer is contiguous (iovcnt=1) or simple enough.
-	 * Robust implementations need `spdk_ioviter` to handle scattered user buffers.
-	 */
-	if (bdev_io->u.bdev.iovcnt > 1) {
-		/* Simplification: Reject complex scatter-gather lists for now */
-		return -ENOTSUP;
-	}
+    ec_io->bounce_buf = spdk_dma_zmalloc(total_data_bytes, 4096, NULL);
+    if (!ec_io->bounce_buf) {
+        return -ENOMEM;
+    }
 
-	/* 2. Prepare Data IOVs (Slicing the user buffer) */
-	ec_io->data_iovs = calloc(ec->k, sizeof(struct iovec));
-	if (!ec_io->data_iovs) {
-		return -ENOMEM;
-	}
+    /* spdk_copy_iovs_to_buf flattens the scatter-gather list into our linear buffer. */
+    spdk_copy_iovs_to_buf(ec_io->bounce_buf, total_data_bytes,
+                               ec_io->iovs, ec_io->iovcnt);
 
-	uint8_t *user_buf_base = bdev_io->u.bdev.iovs[0].iov_base;
+    ec_io->data_iovs = calloc(ec->k, sizeof(struct iovec));
+    if (!ec_io->data_iovs) {
+        rc = -ENOMEM;
+        goto error;
+    }
 
-	for (i = 0; i < ec->k; i++) {
-		/* Slice the user buffer into k chunks */
-		ec_io->data_iovs[i].iov_base = user_buf_base + (i * chunk_bytes);
-		ec_io->data_iovs[i].iov_len = chunk_bytes;
-	}
+    uint8_t *data_base = ec_io->bounce_buf;
 
-	/* 3. Prepare Parity Buffers & IOVs */
-	ec_io->parity_iovs = calloc(ec->m, sizeof(struct iovec));
-	ec_io->parity_bufs = calloc(ec->m, sizeof(void *)); /* pointers to free later */
+    for (i = 0; i < ec->k; i++) {
+        ec_io->data_iovs[i].iov_base = data_base + (i * chunk_bytes);
+        ec_io->data_iovs[i].iov_len = chunk_bytes;
+    }
 
-	if (!ec_io->parity_iovs || !ec_io->parity_bufs) {
-		rc = -ENOMEM;
-		goto error;
-	}
+    /* Prepare Parity Buffers & IOVs */
+    ec_io->parity_iovs = calloc(ec->m, sizeof(struct iovec));
+    ec_io->parity_bufs = calloc(ec->m, sizeof(void *));
 
-	for (i = 0; i < ec->m; i++) {
-		/* Allocate DMA-aligned memory for parity calculation */
-		ec_io->parity_bufs[i] = spdk_dma_zmalloc(chunk_bytes, 4096, NULL);
-		if (!ec_io->parity_bufs[i]) {
-			rc = -ENOMEM;
-			goto error;
-		}
-		ec_io->parity_iovs[i].iov_base = ec_io->parity_bufs[i];
-		ec_io->parity_iovs[i].iov_len = chunk_bytes;
-	}
+    if (!ec_io->parity_iovs || !ec_io->parity_bufs) {
+        rc = -ENOMEM;
+        goto error;
+    }
 
-	/* 4. Execute Erasure Coding (Encode) */
-	/* We need void* arrays for the wrapper API */
-	void *data_ptrs[EC_MAX_BASE_BDEVS];
-	void *parity_ptrs[EC_MAX_BASE_BDEVS];
+    for (i = 0; i < ec->m; i++) {
+        ec_io->parity_bufs[i] = spdk_dma_zmalloc(chunk_bytes, 4096, NULL);
+        if (!ec_io->parity_bufs[i]) {
+            rc = -ENOMEM;
+            goto error;
+        }
+        ec_io->parity_iovs[i].iov_base = ec_io->parity_bufs[i];
+        ec_io->parity_iovs[i].iov_len = chunk_bytes;
+    }
 
-	for (i = 0; i < ec->k; i++) {
-		data_ptrs[i] = ec_io->data_iovs[i].iov_base;
-	}
-	for (i = 0; i < ec->m; i++) {
-		parity_ptrs[i] = ec_io->parity_iovs[i].iov_base;
-	}
 
-	/* Synchronous call to ISA-L wrapper */
-	spdk_ec_encode(parity_ptrs, ec->m,
-		       data_ptrs, ec->k,
-		       ec->g_tbls, chunk_bytes);
+    void *data_ptrs[EC_MAX_BASE_BDEVS];
+    void *parity_ptrs[EC_MAX_BASE_BDEVS];
 
-	/* 5. Submit Writes to Disks */
+    for (i = 0; i < ec->k; i++) data_ptrs[i] = ec_io->data_iovs[i].iov_base;
+    for (i = 0; i < ec->m; i++) parity_ptrs[i] = ec_io->parity_iovs[i].iov_base;
 
-	/* Calculate physical offset */
-	uint64_t stripe_index = bdev_io->u.bdev.offset_blocks / ec->stripe_blocks;
-	uint64_t offset_in_disk = stripe_index * ec->strip_size;
+    spdk_ec_encode(parity_ptrs, ec->m, data_ptrs, ec->k, ec->g_tbls, chunk_bytes);
 
-	/* Set tracking counters */
-	ec_io->outstanding_ios = ec->n; /* k + m */
-	ec_io->status = SPDK_BDEV_IO_STATUS_SUCCESS;
+    /* Submit Writes to Disks */
+    uint64_t stripe_index = ec_io->offset_blocks / ec->stripe_blocks;
+    uint64_t offset_in_disk = stripe_index * ec->strip_size;
 
-	/* 5.1 Write Data Chunks (0 to k-1) */
-	for (i = 0; i < ec->k; i++) {
-		rc = spdk_bdev_writev_blocks(ec->descs[i],
-					     ec_io->ch->base_chans[i],
-					     &ec_io->data_iovs[i], 1, /* Use the sliced iov */
-					     offset_in_disk,
-					     chunk_blocks,
-					     ec_child_io_complete,
-					     ec_io);
-		if (rc != 0) {
-			ec_io->outstanding_ios--;
-			ec_io->status = SPDK_BDEV_IO_STATUS_FAILED;
-		}
-	}
+    ec_io->base_io_remaining = ec->n;
+    ec_io->status = SPDK_BDEV_IO_STATUS_SUCCESS;
 
-	/* 5.2 Write Parity Chunks (k to n-1) */
-	for (i = 0; i < ec->m; i++) {
-		uint32_t bdev_idx = ec->k + i;
-		rc = spdk_bdev_writev_blocks(ec->descs[bdev_idx],
-					     ec_io->ch->base_chans[bdev_idx],
-					     &ec_io->parity_iovs[i], 1,
-					     offset_in_disk,
-					     chunk_blocks,
-					     ec_child_io_complete,
-					     ec_io);
-		if (rc != 0) {
-			ec_io->outstanding_ios--;
-			ec_io->status = SPDK_BDEV_IO_STATUS_FAILED;
-		}
-	}
+    /* Write Data Chunks */
+    for (i = 0; i < ec->k; i++) {
+        rc = spdk_bdev_writev_blocks(ec->descs[i],
+                                     ec_io->ch->base_chans[i],
+                                     &ec_io->data_iovs[i], 1,
+                                     offset_in_disk,
+                                     chunk_blocks,
+                                     ec_child_io_complete,
+                                     ec_io);
+        if (rc != 0) {
+            ec_io->base_io_remaining--;
+            ec_io->status = SPDK_BDEV_IO_STATUS_FAILED;
+        }
+    }
 
-	/* If all submissions failed, we might need to return error immediately */
-	if (ec_io->outstanding_ios == 0) {
-		return -EIO;
-	}
+    /* Write Parity Chunks */
+    for (i = 0; i < ec->m; i++) {
+        uint32_t bdev_idx = ec->k + i;
+        rc = spdk_bdev_writev_blocks(ec->descs[bdev_idx],
+                                     ec_io->ch->base_chans[bdev_idx],
+                                     &ec_io->parity_iovs[i], 1,
+                                     offset_in_disk,
+                                     chunk_blocks,
+                                     ec_child_io_complete,
+                                     ec_io);
+        if (rc != 0) {
+            ec_io->base_io_remaining--;
+            ec_io->status = SPDK_BDEV_IO_STATUS_FAILED;
+        }
+    }
 
-	return 0;
+    if (ec_io->base_io_remaining == 0) {
+        rc = -EIO;
+        goto error;
+    }
+
+    return 0;
 
 error:
-	/* Cleanup allocation on failure */
-	if (ec_io->parity_bufs) {
-		for (i = 0; i < ec->m; i++) {
-			if (ec_io->parity_bufs[i]) {
-				spdk_dma_free(ec_io->parity_bufs[i]);
-			}
-		}
-		free(ec_io->parity_bufs);
-	}
-	if (ec_io->parity_iovs) {
-		free(ec_io->parity_iovs);
-	}
-	if (ec_io->data_iovs) {
-		free(ec_io->data_iovs);
-	}
+    /* Cleanup on failure */
+    if (ec_io->bounce_buf) spdk_dma_free(ec_io->bounce_buf);
 
-	return rc;
+    if (ec_io->parity_bufs) {
+        for (i = 0; i < ec->m; i++) {
+            if (ec_io->parity_bufs[i]) spdk_dma_free(ec_io->parity_bufs[i]);
+        }
+        free(ec_io->parity_bufs);
+    }
+    if (ec_io->parity_iovs) free(ec_io->parity_iovs);
+    if (ec_io->data_iovs) free(ec_io->data_iovs);
+
+    return rc;
 }
 
 static void
 ec_submit_request(struct spdk_io_channel *ch, struct spdk_bdev_io *bdev_io)
 {
+	/* Access the pre-allocated driver_ctx */
 	struct ec_bdev_io *ec_io = (struct ec_bdev_io *)bdev_io->driver_ctx;
 	struct ec_io_channel *ec_ch = spdk_io_channel_get_ctx(ch);
+	int rc = 0;
 
+	/* Initialize the private context (Copy params from bdev_io) */
 	ec_bdev_io_init(ec_io, ec_ch, bdev_io);
 
-	/* * Optional: Add tracing here 
-	 * spdk_trace_record(TRACE_BDEV_EC_IO_START, ...);
-	 */
-
-	/* 3. Dispatch based on I/O Type */
+	/* Dispatch based on IO type */
 	switch (bdev_io->type) {
 	case SPDK_BDEV_IO_TYPE_READ:
-		/* * For EC, Normal Read is usually a pass-through to a specific data chunk.
-		 * We pass the initialized ec_io context to the handler.
-		 */
-		ec_submit_read(ec_io);
+		rc = ec_submit_read(ec_io);
 		break;
 
 	case SPDK_BDEV_IO_TYPE_WRITE:
-		/*
-		 * Forward to write logic (Full Stripe Check -> Encode -> Write)
-		 */
-		ec_submit_write(ec_io);
+		SPDK_NOTICELOG("Submitting EC Write IO\n");
+		rc = ec_submit_write(ec_io);
 		break;
 
 	case SPDK_BDEV_IO_TYPE_RESET:
-		/* Simple success for reset in this demo */
 		spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_SUCCESS);
-		break;
+		return;
 
 	case SPDK_BDEV_IO_TYPE_FLUSH:
 	case SPDK_BDEV_IO_TYPE_UNMAP:
-		/* * TODO: Implement fan-out flush/unmap to base devices.
-		 * For now, complete successfully to allow mkfs/mount to work.
-		 */
+		/* Placeholder: Complete successfully */
 		spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_SUCCESS);
-		break;
+		return;
 
 	default:
-		SPDK_ERRLOG("submit request, invalid io type %u\n", bdev_io->type);
-		spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_FAILED);
+		SPDK_ERRLOG("Invalid IO type %d\n", bdev_io->type);
+		rc = -EINVAL;
 		break;
+	}
+
+	/* Handle Submission Failures
+	 * If rc != 0, the IO was NOT submitted to the base device.
+	 * We must complete it here to avoid hanging the caller.
+	 */
+	if (rc != 0) {
+		if (rc == -ENOMEM) {
+			spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_NOMEM);
+		} else {
+			spdk_bdev_io_complete(bdev_io, SPDK_BDEV_IO_STATUS_FAILED);
+		}
+		/* Note: No need to free(ec_io) because it's part of bdev_io */
 	}
 }
 

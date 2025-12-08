@@ -62,30 +62,41 @@ struct ec_bdev {
 
 
 /*
- * Context structure for a single EC I/O request.
+ * Structure: ec_bdev_io
  *
- * instead of mallocing this for every IO, we define it here and tell SPDK
- * to reserve this much space inside every spdk_bdev_io structure via get_ctx_size.
- * This effectively achieves Zero-Malloc for the I/O submission path.
+ * This structure resides inside the 'driver_ctx' of the spdk_bdev_io.
+ * It serves as the private workspace for the EC module to process a single request.
  */
 struct ec_bdev_io {
-	/* Pointer back to the parent bdev_io */
-	struct spdk_bdev_io *bdev_io;
+	/* Link to Parent/Channel */
+	struct spdk_bdev_io *bdev_io;   /* The original request from the upper layer */
+	struct ec_io_channel *ch;       /* The thread-local channel */
 
-	/* Thread-local IO channel */
-	struct ec_io_channel *ch;
-
-	/* EC Logic: Dynamic resources
-	 * Note: These still need allocation if k/m are large, or we can use 
-	 * a pre-allocated pool/cache for these arrays too.
+	/* Private Copy of I/O Parameters
+	 * We copy these from bdev_io so we can modify them internally (if needed)
+	 * or track progress without altering the original request.
+	 * This creates a safe "Working Copy".
 	 */
-	struct iovec *data_iovs;
-	struct iovec *parity_iovs;
-	void **parity_bufs;
+	uint64_t offset_blocks;
+	uint64_t num_blocks;
+	struct iovec *iovs;
+	int iovcnt;
 
-	/* Completion tracking */
-	uint32_t outstanding_ios;
-	int status;
+	/* EC-Specific Resources
+	 * Pointers to dynamic arrays used during encoding/writing.
+	 */
+	struct iovec *data_iovs;        /* Sliced user data iovecs */
+	struct iovec *parity_iovs;      /* Parity buffer iovecs */
+	void **parity_bufs;             /* Allocated parity memory buffers */
+
+	/* Completion Tracking
+	 * Tracks how many underlying child I/Os are still pending.
+	 */
+	uint64_t base_io_remaining;
+	int status;                     /* Aggregate status (SUCCESS/FAILED) */
+
+
+	void *bounce_buf;
 };
 
 int ec_bdev_create(const char *name, uint32_t strip_size, uint32_t k, uint32_t m,
