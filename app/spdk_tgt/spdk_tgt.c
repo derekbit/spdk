@@ -79,10 +79,10 @@ spdk_tgt_started(void *arg1)
 		spdk_tgt_save_pid(g_pid_path);
 	}
 
-	if (getenv("MEMZONE_DUMP") != NULL) {
+	//if (getenv("MEMZONE_DUMP") != NULL) {
 		spdk_memzone_dump(stdout);
 		fflush(stdout);
-	}
+	//}
 }
 
 int
