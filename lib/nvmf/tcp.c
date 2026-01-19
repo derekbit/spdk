@@ -1385,6 +1385,9 @@ nvmf_tcp_qpair_init_mem_resource(struct spdk_nvmf_tcp_qpair *tqpair)
 		return -1;
 	}
 
+	SPDK_NOTICELOG("Allocated %u bytes for pdu pool on tqpair=%p\n",
+		       (2 * tqpair->resource_count + 1) * sizeof(*tqpair->pdus), tqpair);
+
 	for (i = 0; i < tqpair->resource_count; i++) {
 		struct spdk_nvmf_tcp_req *tcp_req = &tqpair->reqs[i];
 
