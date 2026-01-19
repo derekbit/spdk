@@ -878,6 +878,8 @@ spdk_app_start(struct spdk_app_opts *opts_user, spdk_msg_fn start_fn,
 
 	app_copy_opts(opts, opts_user, opts_user->opts_size);
 
+	spdk_memzone_dump(stdout);
+
 	if (!start_fn) {
 		SPDK_ERRLOG("start_fn should not be NULL\n");
 		return 1;
@@ -944,6 +946,8 @@ spdk_app_start(struct spdk_app_opts *opts_user, spdk_msg_fn start_fn,
 	/* Calculate mempool size now that the env layer has configured the core count
 	 * for the application */
 	calculate_mempool_size(opts, opts_user);
+
+	spdk_memzone_dump(stdout);
 
 	spdk_log_open(opts->log);
 
