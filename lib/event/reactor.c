@@ -293,6 +293,8 @@ spdk_reactors_init(size_t msg_mempool_size)
 		return -1;
 	}
 
+	spdk_memzone_dump(stdout);
+
 	/* struct spdk_reactor must be aligned on 64 byte boundary */
 	g_reactor_count = spdk_env_get_last_core() + 1;
 	rc = posix_memalign((void **)&g_reactors, 64,
@@ -323,6 +325,8 @@ spdk_reactors_init(size_t msg_mempool_size)
 		free(g_core_infos);
 		return rc;
 	}
+
+	spdk_memzone_dump(stdout);
 
 	SPDK_ENV_FOREACH_CORE(i) {
 		reactor_construct(&g_reactors[i], i);
