@@ -358,6 +358,9 @@ nvme_tcp_alloc_reqs(struct nvme_tcp_qpair *tqpair)
 					 0x1000, NULL,
 					 SPDK_ENV_NUMA_ID_ANY, SPDK_MALLOC_DMA);
 
+	SPDK_NOTICELOG("Allocating %u TCP requests for qid %u size=%v \n",
+			   tqpair->num_entries, tqpair->qpair.qid, (tqpair->num_entries + 2) * sizeof(struct nvme_tcp_pdu));
+
 	if (tqpair->send_pdus == NULL) {
 		NVME_TQPAIR_ERRLOG(tqpair, "Failed to allocate send_pdus\n");
 		goto fail;
