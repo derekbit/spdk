@@ -995,6 +995,8 @@ spdk_app_start(struct spdk_app_opts *opts_user, spdk_msg_fn start_fn,
 		return 1;
 	}
 
+	spdk_memzone_dump(stdout);
+
 	SPDK_ENV_FOREACH_CORE(core) {
 		rc = init_proc_stat(core);
 		if (rc) {
@@ -1034,10 +1036,14 @@ spdk_app_start(struct spdk_app_opts *opts_user, spdk_msg_fn start_fn,
 		g_spdk_app.json_data_size = opts->json_data_size;
 	}
 
+	spdk_memzone_dump(stdout);
+
 	spdk_thread_send_msg(spdk_thread_get_app_thread(), bootstrap_fn, NULL);
 
 	/* This blocks until spdk_app_stop is called */
 	spdk_reactors_start();
+
+	spdk_memzone_dump(stdout);
 
 	g_env_was_setup = true;
 

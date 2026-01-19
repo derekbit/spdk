@@ -332,6 +332,8 @@ spdk_reactors_init(size_t msg_mempool_size)
 		reactor_construct(&g_reactors[i], i);
 	}
 
+	spdk_memzone_dump(stdout);
+
 	current_core = spdk_env_get_current_core();
 	reactor = spdk_reactor_get(current_core);
 	assert(reactor != NULL);
