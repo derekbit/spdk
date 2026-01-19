@@ -1372,6 +1372,9 @@ nvmf_tcp_qpair_init_mem_resource(struct spdk_nvmf_tcp_qpair *tqpair)
 			SPDK_ERRLOG("Unable to allocate bufs on tqpair=%p.\n", tqpair);
 			return -1;
 		}
+
+		SPDK_NOTICELOG("Allocated %u bytes for in-capsule data on tqpair=%p\n",
+			       tqpair->resource_count * in_capsule_data_size, tqpair);
 	}
 	/* prepare memory space for receiving pdus and tcp_req */
 	/* Add additional 1 member, which will be used for mgmt_pdu owned by the tqpair */
@@ -1603,6 +1606,8 @@ nvmf_tcp_control_msg_list_create(uint16_t num_messages)
 
 	list->msg_buf = spdk_zmalloc(num_messages * SPDK_NVME_TCP_IN_CAPSULE_DATA_MAX_SIZE,
 				     NVMF_DATA_BUFFER_ALIGNMENT, NULL, SPDK_ENV_NUMA_ID_ANY, SPDK_MALLOC_DMA);
+	SPDK_NOTICELOG("Allocated %u bytes for TCP control message buffers\n",
+		       num_messages * SPDK_NVME_TCP_IN_CAPSULE_DATA_MAX_SIZE);
 	if (!list->msg_buf) {
 		SPDK_ERRLOG("Failed to allocate memory for control message buffers\n");
 		free(list);
