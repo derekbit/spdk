@@ -969,6 +969,8 @@ nvme_qpair_init(struct spdk_nvme_qpair *qpair, uint16_t id,
 
 	qpair->req_buf = spdk_zmalloc(req_size_padded * num_requests, 64, NULL,
 				      SPDK_ENV_NUMA_ID_ANY, SPDK_MALLOC_SHARE);
+	SPDK_NOTICELOG("Allocated %zu bytes for qpair req_buf with %d requests\n",
+		       req_size_padded * num_requests, num_requests);
 	if (qpair->req_buf == NULL) {
 		NVME_QPAIR_ERRLOG(qpair, "no memory to allocate qpair req_buf with %d request\n", num_requests);
 		return -ENOMEM;
