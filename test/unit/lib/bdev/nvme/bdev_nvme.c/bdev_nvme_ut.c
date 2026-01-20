@@ -764,6 +764,7 @@ spdk_nvme_ctrlr_alloc_io_qpair(struct spdk_nvme_ctrlr *ctrlr,
 
 	qpair->ctrlr = ctrlr;
 	TAILQ_INIT(&qpair->outstanding_reqs);
+	SPDK_NOTICELOG("IO qpair allocated in ctrlr %p", (void *)ctrlr);
 	TAILQ_INSERT_TAIL(&ctrlr->active_io_qpairs, qpair, tailq);
 
 	return qpair;
