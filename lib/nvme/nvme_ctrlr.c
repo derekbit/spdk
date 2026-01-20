@@ -389,6 +389,8 @@ nvme_ctrlr_create_io_qpair(struct spdk_nvme_ctrlr *ctrlr,
 		return NULL;
 	}
 
+	SPDK_NOTICELOG("Allocated IO qpair with QID %d\n", qid);
+
 	qpair = nvme_transport_ctrlr_create_io_qpair(ctrlr, qid, opts);
 	if (qpair == NULL) {
 		NVME_CTRLR_ERRLOG(ctrlr, "nvme_transport_ctrlr_create_io_qpair() failed\n");
