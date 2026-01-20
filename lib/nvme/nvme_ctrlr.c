@@ -4362,6 +4362,8 @@ nvme_ctrlr_construct(struct spdk_nvme_ctrlr *ctrlr)
 		ctrlr->opts.admin_queue_size = SPDK_NVME_ADMIN_QUEUE_MIN_ENTRIES;
 	}
 
+	SPDK_NOTICELOG("ctrlr->opts.admin_queue_size = %u\n", ctrlr->opts.admin_queue_size);
+
 	ctrlr->flags = 0;
 	ctrlr->free_io_qids = NULL;
 	ctrlr->is_resetting = false;
