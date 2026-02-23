@@ -8700,6 +8700,14 @@ bs_snapshot_checksum_cleanup_finish(void *cb_arg, int bserrno)
 }
 
 static void
+bs_snapshot_checksum_close_blob(void *cb_arg)
+{
+	struct snapshot_checksum_ctx *ctx = cb_arg;
+
+	spdk_blob_close(ctx->blob, bs_snapshot_checksum_cleanup_finish, ctx);
+}
+
+static void
 bs_snapshot_checksum_md_synchronized(void *cb_arg, int bserrno)
 {
 	struct snapshot_checksum_ctx *ctx = cb_arg;
@@ -8745,7 +8753,7 @@ bs_snapshot_checksum_blob_read_cpl(void *cb_arg, int bserrno)
 		ctx->bserrno = bserrno;
 		_blob->locked_operation_in_progress = false;
 		bs_snapshot_free_clusters_checksums(_blob);
-		spdk_blob_close(_blob, bs_snapshot_checksum_cleanup_finish, ctx);
+		spdk_thread_send_msg(spdk_get_thread(), bs_snapshot_checksum_close_blob, ctx);
 		return;
 	}
 
@@ -8771,7 +8779,7 @@ bs_snapshot_checksum_cluster_find_next(void *cb_arg)
 		ctx->bserrno = -EINTR;
 		_blob->locked_operation_in_progress = false;
 		bs_snapshot_free_clusters_checksums(_blob);
-		spdk_blob_close(_blob, bs_snapshot_checksum_cleanup_finish, ctx);
+		spdk_thread_send_msg(spdk_get_thread(), bs_snapshot_checksum_close_blob, ctx);
 		return;
 	}
 
