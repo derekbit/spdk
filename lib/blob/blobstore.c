@@ -7649,6 +7649,14 @@ bs_shallow_copy_cleanup_finish(void *cb_arg, int bserrno)
 }
 
 static void
+bs_shallow_copy_close_blob(void *cb_arg)
+{
+	struct shallow_copy_ctx *ctx = cb_arg;
+
+	spdk_blob_close(ctx->blob, bs_shallow_copy_cleanup_finish, ctx);
+}
+
+static void
 bs_shallow_copy_bdev_unmap_cpl(struct spdk_io_channel *channel, void *cb_arg, int bserrno)
 {
 	struct shallow_copy_ctx *ctx = cb_arg;
@@ -7658,7 +7666,7 @@ bs_shallow_copy_bdev_unmap_cpl(struct spdk_io_channel *channel, void *cb_arg, in
 		SPDK_ERRLOG("blob 0x%" PRIx64 " shallow copy, ext dev unmap error %d\n", ctx->blob->id, bserrno);
 		ctx->bserrno = bserrno;
 		_blob->locked_operation_in_progress = false;
-		spdk_blob_close(_blob, bs_shallow_copy_cleanup_finish, ctx);
+		spdk_thread_send_msg(spdk_get_thread(), bs_shallow_copy_close_blob, ctx);
 		return;
 	}
 
@@ -7681,7 +7689,7 @@ bs_shallow_copy_bdev_write_cpl(struct spdk_io_channel *channel, void *cb_arg, in
 		SPDK_ERRLOG("blob 0x%" PRIx64 " shallow copy, ext dev write error %d\n", ctx->blob->id, bserrno);
 		ctx->bserrno = bserrno;
 		_blob->locked_operation_in_progress = false;
-		spdk_blob_close(_blob, bs_shallow_copy_cleanup_finish, ctx);
+		spdk_thread_send_msg(spdk_get_thread(), bs_shallow_copy_close_blob, ctx);
 		return;
 	}
 
@@ -7710,7 +7718,7 @@ bs_shallow_copy_blob_read_cpl(void *cb_arg, int bserrno)
 		SPDK_ERRLOG("blob 0x%" PRIx64 " shallow copy, blob read error %d\n", ctx->blob->id, bserrno);
 		ctx->bserrno = bserrno;
 		_blob->locked_operation_in_progress = false;
-		spdk_blob_close(_blob, bs_shallow_copy_cleanup_finish, ctx);
+		spdk_thread_send_msg(spdk_get_thread(), bs_shallow_copy_close_blob, ctx);
 		return;
 	}
 
@@ -7751,7 +7759,7 @@ bs_range_shallow_copy_cluster_handle_next(void *cb_arg)
 		}
 	} else {
 		_blob->locked_operation_in_progress = false;
-		spdk_blob_close(_blob, bs_shallow_copy_cleanup_finish, ctx);
+		spdk_thread_send_msg(spdk_get_thread(), bs_shallow_copy_close_blob, ctx);
 	}
 }
 
@@ -7777,7 +7785,9 @@ bs_shallow_copy_cluster_find_next(void *cb_arg)
 					      bs_shallow_copy_blob_read_cpl, ctx, SPDK_BLOB_READ);
 	} else {
 		_blob->locked_operation_in_progress = false;
-		spdk_blob_close(_blob, bs_shallow_copy_cleanup_finish, ctx);
+		SPDK_NOTICELOG("blob 0x%" PRIx64 " shallow copy, copied clusters: %" PRIu64 ", unmapped clusters: %" PRIu64 "\n",
+				   _blob->id, ctx->copied_clusters_count, ctx->unmapped_clusters_count);
+		spdk_thread_send_msg(spdk_get_thread(), bs_shallow_copy_close_blob, ctx);
 	}
 }
 
@@ -8017,6 +8027,14 @@ bs_deep_copy_cleanup_finish(void *cb_arg, int bserrno)
 }
 
 static void
+bs_deep_copy_close_blob(void *cb_arg)
+{
+	struct deep_copy_ctx *ctx = cb_arg;
+
+	spdk_blob_close(ctx->blob, bs_deep_copy_cleanup_finish, ctx);
+}
+
+static void
 bs_deep_copy_bdev_write_cpl(struct spdk_io_channel *channel, void *cb_arg, int bserrno)
 {
 	struct deep_copy_ctx *ctx = cb_arg;
@@ -8026,7 +8044,7 @@ bs_deep_copy_bdev_write_cpl(struct spdk_io_channel *channel, void *cb_arg, int b
 		SPDK_ERRLOG("blob 0x%" PRIx64 " deep copy, ext dev write error %d\n", ctx->blob->id, bserrno);
 		ctx->bserrno = bserrno;
 		_blob->locked_operation_in_progress = false;
-		spdk_blob_close(_blob, bs_deep_copy_cleanup_finish, ctx);
+		spdk_thread_send_msg(spdk_get_thread(), bs_deep_copy_close_blob, ctx);
 		return;
 	}
 
@@ -8050,7 +8068,7 @@ bs_deep_copy_blob_read_cpl(void *cb_arg, int bserrno)
 		SPDK_ERRLOG("blob 0x%" PRIx64 " deep copy, blob read error %d\n", ctx->blob->id, bserrno);
 		ctx->bserrno = bserrno;
 		_blob->locked_operation_in_progress = false;
-		spdk_blob_close(_blob, bs_deep_copy_cleanup_finish, ctx);
+		spdk_thread_send_msg(spdk_get_thread(), bs_deep_copy_close_blob, ctx);
 		return;
 	}
 
@@ -8112,7 +8130,9 @@ bs_deep_copy_cluster_find_next(void *cb_arg)
 			ctx->status_cb(_blob->active.num_clusters, ctx->status_cb_arg);
 		}
 		_blob->locked_operation_in_progress = false;
-		spdk_blob_close(_blob, bs_deep_copy_cleanup_finish, ctx);
+		SPDK_NOTICELOG("blob 0x%" PRIx64 " deep copy completed, total clusters: %" PRIu64 "\n",
+				   _blob->id, _blob->active.num_clusters);
+		spdk_thread_send_msg(spdk_get_thread(), bs_deep_copy_close_blob, ctx);
 	}
 }
 
