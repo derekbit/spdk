@@ -5,7 +5,9 @@
 #  Copyright (c) 2022 Dell Inc, or its subsidiaries.
 #
 # Minimal install
-zypper install -y gcc gcc-c++ make
+zypper install -y gcc
+zypper install -y gcc-c++
+zypper install -y make
 zypper install -y cunit-devel
 zypper install -y libaio-devel
 zypper install -y libopenssl-devel
