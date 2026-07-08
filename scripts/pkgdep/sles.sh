@@ -5,6 +5,7 @@
 #  Copyright (c) 2022 Dell Inc, or its subsidiaries.
 #
 # Minimal install
+zypper update -y
 zypper install -y gcc
 zypper install -y gcc-c++
 zypper install -y make
