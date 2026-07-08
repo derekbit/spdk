@@ -5,9 +5,21 @@
 #  Copyright (c) 2022 Dell Inc, or its subsidiaries.
 #
 # Minimal install
-zypper install -y gcc gcc-c++ make cunit-devel libaio-devel libopenssl-devel \
-	libuuid-devel python3-base ncurses-devel libjson-c-devel libcmocka-devel \
-	ninja meson python3-devel python3-pyelftools fuse3-devel unzip
+zypper install -y gcc gcc-c++ make
+zypper install -y cunit-devel
+zypper install -y libaio-devel
+zypper install -y libopenssl-devel
+zypper install -y libuuid-devel
+zypper install -y python3-base
+zypper install -y ncurses-devel
+zypper install -y libjson-c-devel
+zypper install -y libcmocka-devel
+zypper install -y ninja
+zypper install -y meson
+zypper install -y python3-devel
+zypper install -y python3-pyelftools
+zypper install -y fuse3-devel
+zypper install -y unzip
 # Additional dependencies for DPDK
 zypper install -y libnuma-devel nasm
 # Additional dependencies for ISA-L used in compression
