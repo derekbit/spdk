@@ -1,0 +1,1555 @@
+/*   SPDX-License-Identifier: BSD-3-Clause
+ *   Copyright (C) 2026 Longhorn Authors.
+ *   All rights reserved.
+ */
+
+/*
+ * bdev_ec_bitmap.c -- in-band unmapped bitmap machinery.
+ *
+ * The persistent per-stripe unmapped bitmap records, for every user
+ * stripe, whether it is logically zero (unmapped) or holds real data.
+ * It lets the EC layer synthesize zeros for discarded ranges without
+ * trusting the base bdevs to zero on discard.
+ *
+ * On-disk it lives in-band and raw-replicated: every base disk reserves
+ * two slots (copy A / copy B) at the front of its address space, each
+ * holding an identical copy of the whole bitmap blob. Crash-safety is
+ * double-buffer + CRC, not EC redundancy. The blob survives n-1 disk
+ * loss by construction -- more than the array's own m, by design: the
+ * metadata outlives the data it describes.
+ *
+ * This file holds the I/O-free core: geometry math (blob_bytes,
+ * reservation) and the serialize / validate / apply of one whole blob.
+ * The async persist (fan out to every online disk at the inactive slot)
+ * and load (scan the copies and commit records, adopt the highest committed)
+ * chains build on these.
+ *
+ * On-disk slot layout (one self-contained extent per slot, replicated
+ * identically on every disk):
+ *
+ *   [ ec_bitmap_header ][ uint64_t span[] ][ crc32c u32 ]
+ *   \________________ blob_bytes _________/trailer at offset blob_bytes
+ *
+ * The CRC32C covers exactly [start, start + blob_bytes) and is stored
+ * in the four bytes immediately following. Any trailing slack between
+ * the CRC and the next strip boundary is unused padding.
+ */
+
+#include "bdev_ec_internal.h"
+
+#include "spdk/bdev_module.h"
+#include "spdk/crc32.h"
+
+#include <assert.h>
+
+/*
+ * ec_bitmap_blob_bytes -- length of the CRC-covered region (header +
+ * span) for a bitmap blob covering num_stripes user stripes. The CRC
+ * trailer lives at offset blob_bytes; total on-disk slot extent is
+ * blob_bytes + sizeof(uint32_t).
+ *
+ * Single source of truth for the layout formula: the reservation
+ * function uses it with max_num_stripes (the WIB-imposed worst case);
+ * fill / validate use it with ec->num_stripes (the current geometry).
+ */
+uint64_t
+ec_bitmap_blob_bytes(uint64_t num_stripes)
+{
+	return sizeof(struct ec_bitmap_header)
+	       + EC_BITMAP_WORDS(num_stripes) * sizeof(uint64_t);
+}
+
+/*
+ * The largest user stripe count the volume may ever hold. The ceiling is
+ * imposed by the WIB, whose header + region bitmap + CRC must fit in one
+ * strip. The region bitmap is written in whole uint64_t words, so the bound
+ * is the number of regions that fit in the payload as whole words, not as
+ * loose bits:
+ *
+ *   wib_payload_bytes = strip_bytes - sizeof(ec_wib_header) - 4
+ *   max_regions       = (wib_payload_bytes / 8) * 64
+ *   max_num_stripes   = max_regions * EC_WIB_REGION_STRIPES
+ *
+ * Using loose bits would admit up to 32 regions that ec_wib_fill_buf then
+ * writes as one extra word, overrunning the one-strip wib_buf. The word
+ * bound matches ec_wib_fill_buf and the create-time WIB-fits check exactly.
+ *
+ * Depends only on strip_size and blocklen, never on disk size -- which is
+ * what lets the front reservations be fixed-max. num_stripes must never
+ * exceed it: ec_compute_geometry and ec_bdev_resize enforce it, and the
+ * assert in ec_wib_fill_buf backstops the WIB buffer.
+ */
+uint64_t
+ec_max_num_stripes(const struct ec_bdev *ec)
+{
+	uint64_t strip_bytes = ec->strip_size * ec->bdev.blocklen;
+	uint64_t wib_payload_bytes;
+	uint64_t max_regions;
+
+	assert(strip_bytes > sizeof(struct ec_wib_header) + sizeof(uint32_t));
+
+	wib_payload_bytes = strip_bytes - sizeof(struct ec_wib_header) - sizeof(uint32_t);
+	max_regions = (wib_payload_bytes / sizeof(uint64_t)) * 64;
+
+	return max_regions * EC_WIB_REGION_STRIPES;
+}
+
+/*
+ * ec_bitmap_reservation_stripes -- per-disk front reservation for the
+ * unmapped bitmap, in physical stripes. Every disk reserves two slots
+ * (copy A / copy B), each holding the worst-case blob at ec_max_num_stripes:
+ *
+ *   slot_strips = ceil((blob_bytes(max) + CRC) / strip_bytes)
+ *   return        slot_strips * 2
+ *
+ * Sized for the max, so it is fixed at create and never moves on resize.
+ * Every disk carries a full copy (raw replication), so the metadata
+ * survives n-1 disk loss and load needs no encode/decode.
+ */
+uint64_t
+ec_bitmap_reservation_stripes(const struct ec_bdev *ec)
+{
+	uint64_t strip_bytes = ec->strip_size * ec->bdev.blocklen;
+	uint64_t slot_extent_bytes;
+	uint64_t slot_strips;
+
+	slot_extent_bytes = ec_bitmap_blob_bytes(ec_max_num_stripes(ec))
+			    + sizeof(uint32_t);
+
+	slot_strips = (slot_extent_bytes + strip_bytes - 1) / strip_bytes;
+
+	return slot_strips * 2;
+}
+
+/*
+ * ec_bitmap_fill_buf -- serialize source_map into buf as a complete
+ * on-disk blob (header + span + CRC32C trailer).
+ *
+ * source_map must hold at least EC_BITMAP_WORDS(ec->num_stripes)
+ * uint64_t words; buf must hold at least blob_bytes + sizeof(uint32_t)
+ * bytes and must be zero-initialised on entry (the trailing slack past
+ * the CRC, if any, is left untouched).
+ *
+ * source_map is taken as an explicit parameter -- not read directly
+ * from ec->stripe_unmapped_map -- so a later caller in the UNMAP path
+ * can persist a staged copy of the map without first applying the
+ * staged changes to the live, reader-visible map. The create-time bootstrap
+ * persist simply passes ec->stripe_unmapped_map.
+ */
+void
+ec_bitmap_fill_buf(struct ec_bdev *ec, const uint64_t *source_map,
+		   uint64_t generation, void *buf)
+{
+	struct ec_bitmap_header *hdr        = buf;
+	uint64_t                 blob_bytes = ec_bitmap_blob_bytes(ec->num_stripes);
+	uint64_t                 map_words  = EC_BITMAP_WORDS(ec->num_stripes);
+	uint64_t                *span       = (uint64_t *)(hdr + 1);
+	uint32_t                *crc_ptr    = (uint32_t *)((uint8_t *)buf + blob_bytes);
+
+	hdr->magic       = EC_BITMAP_MAGIC;
+	hdr->version     = EC_BITMAP_VERSION;
+	hdr->generation  = generation;
+	hdr->blob_bytes  = blob_bytes;
+	hdr->num_stripes = ec->num_stripes;
+	hdr->reserved    = 0;
+
+	memcpy(span, source_map, map_words * sizeof(uint64_t));
+
+	/*
+	 * Whole-blob CRC, recomputed over all blob_bytes on every persist even
+	 * when a single bit changed -- the cost of the raw-replicated,
+	 * single-atomic-blob model. blob_bytes is bounded by the WIB-imposed
+	 * stripe ceiling (tens of KiB for any volume), so this is acceptable.
+	 * TODO(perf): if a write-heavy fstrim workload makes persist hot,
+	 * switch to an incremental CRC over only the changed words.
+	 */
+	*crc_ptr = spdk_crc32c_update(buf, blob_bytes, 0);
+}
+
+/*
+ * ec_bitmap_validate_buf -- check a slot read back from disk.
+ *
+ *   1. magic matches.
+ *   2. version is the one this build understands.
+ *   3. num_stripes is not larger than the current volume. A copy written
+ *      before a resize carries a smaller count and is still valid -- apply
+ *      zero-extends the rest, the same as a resize does in memory. A larger
+ *      count means a foreign or corrupt blob (the volume never shrinks).
+ *   4. blob_bytes matches the copy's own num_stripes -- the copy is
+ *      internally consistent.
+ *   5. CRC32C over [start, start + blob_bytes) matches the trailer at
+ *      offset blob_bytes.
+ *
+ * Returns 0 and fills *gen_out -- and *blob_crc_out, when non-NULL, with the
+ * validated CRC trailer so the caller can match the copy against a commit
+ * record -- on success; -EINVAL otherwise. A torn write looks the same as any
+ * other invalid slot from the caller's point of view.
+ */
+int
+ec_bitmap_validate_buf(const struct ec_bdev *ec, const void *buf,
+		       uint64_t *gen_out, uint32_t *blob_crc_out)
+{
+	const struct ec_bitmap_header *hdr        = buf;
+	uint64_t                       blob_bytes;
+	const uint32_t                *crc_ptr;
+	uint32_t                       actual_crc, expected_crc;
+
+	if (hdr->magic != EC_BITMAP_MAGIC) {
+		return -EINVAL;
+	}
+	if (hdr->version != EC_BITMAP_VERSION) {
+		return -EINVAL;
+	}
+	if (hdr->num_stripes > ec->num_stripes) {
+		return -EINVAL;
+	}
+	if (hdr->blob_bytes != ec_bitmap_blob_bytes(hdr->num_stripes)) {
+		return -EINVAL;
+	}
+
+	blob_bytes   = hdr->blob_bytes;
+	crc_ptr      = (const uint32_t *)((const uint8_t *)buf + blob_bytes);
+	actual_crc   = spdk_crc32c_update(buf, blob_bytes, 0);
+	expected_crc = *crc_ptr;
+	if (actual_crc != expected_crc) {
+		return -EINVAL;
+	}
+
+	*gen_out = hdr->generation;
+	if (blob_crc_out) {
+		*blob_crc_out = expected_crc;
+	}
+	return 0;
+}
+
+/* Serialize a commit record (the "stamp") into buf with a CRC32C trailer. */
+void
+ec_bitmap_commit_fill_buf(uint64_t committed_gen, uint32_t blob_crc, void *buf)
+{
+	struct ec_bitmap_commit *rec     = buf;
+	uint32_t                *crc_ptr = (uint32_t *)(rec + 1);
+
+	rec->magic         = EC_BITMAP_COMMIT_MAGIC;
+	rec->version       = EC_BITMAP_COMMIT_VERSION;
+	rec->committed_gen = committed_gen;
+	rec->blob_crc      = blob_crc;
+	rec->reserved      = 0;
+
+	*crc_ptr = spdk_crc32c_update(buf, sizeof(*rec), 0);
+}
+
+/* Validate a commit record read from disk: magic, version, CRC32C trailer. */
+int
+ec_bitmap_commit_validate_buf(const void *buf, uint64_t *gen_out,
+			      uint32_t *blob_crc_out)
+{
+	const struct ec_bitmap_commit *rec     = buf;
+	const uint32_t                *crc_ptr = (const uint32_t *)(rec + 1);
+	uint32_t                       actual_crc;
+
+	if (rec->magic != EC_BITMAP_COMMIT_MAGIC) {
+		return -EINVAL;
+	}
+	if (rec->version != EC_BITMAP_COMMIT_VERSION) {
+		return -EINVAL;
+	}
+
+	actual_crc = spdk_crc32c_update(buf, sizeof(*rec), 0);
+	if (actual_crc != *crc_ptr) {
+		return -EINVAL;
+	}
+
+	*gen_out      = rec->committed_gen;
+	*blob_crc_out = rec->blob_crc;
+	return 0;
+}
+
+/*
+ * True when some scanned commit record recorded this copy's generation and
+ * blob_crc. A commit record is written only after the blob is safely on enough
+ * disks, so a match means the copy was fully written -- not a partial persist.
+ * ec_bitmap_select_committed adopts only these copies.
+ */
+static bool
+ec_bitmap_copy_is_committed(const struct ec_bitmap_gen_crc *commits, uint32_t n_commits,
+			    struct ec_bitmap_gen_crc copy)
+{
+	uint32_t i;
+
+	for (i = 0; i < n_commits; i++) {
+		if (commits[i].generation == copy.generation &&
+		    commits[i].blob_crc == copy.blob_crc) {
+			return true;
+		}
+	}
+	return false;
+}
+
+int
+ec_bitmap_select_committed(const struct ec_bitmap_gen_crc *bitmaps, uint32_t n_bitmaps,
+			   const struct ec_bitmap_gen_crc *commits, uint32_t n_commits)
+{
+	int      best = -1;
+	uint32_t i;
+
+	for (i = 0; i < n_bitmaps; i++) {
+		if (!ec_bitmap_copy_is_committed(commits, n_commits, bitmaps[i])) {
+			continue;
+		}
+		if (best < 0 || bitmaps[i].generation > bitmaps[best].generation) {
+			best = (int)i;
+		}
+	}
+
+	return best;
+}
+
+/*
+ * ec_bitmap_apply_buf -- copy a validated blob's span into
+ * ec->stripe_unmapped_map. Call only after ec_bitmap_validate_buf has
+ * returned 0 for this buffer.
+ *
+ * Threading: this runs on the home thread (the creation thread that
+ * issued the async load chain). The bdev IS already registered at
+ * this point -- spdk_bdev_register fires before the load chain runs
+ * apply_buf -- so a strict "no reader exists" argument does not hold.
+ *
+ * The window from register to apply_buf is non-empty, but the only
+ * reader that can enter it is SPDK examine (lvol superblock import
+ * etc.), which runs on the same spdk_thread that registered the bdev
+ * -- i.e. home. Examine and apply_buf therefore serialize on home,
+ * and the memcpy is observably atomic to examine reads.
+ *
+ * Workload (cross-reactor) readers cannot reach the bdev until the
+ * create-RPC returns, which waits for both apply_buf and
+ * spdk_bdev_wait_for_examine to finish (see the create-finalize
+ * comment in bdev_ec.c). So by the time any non-home reader runs an
+ * acquire-load on stripe_unmapped_map, the memcpy is complete and
+ * its effect is published by the post-create release barriers SPDK
+ * inserts when handing the bdev to its consumers.
+ *
+ * The same logic lets resize.c:165 use memcpy under quiesce.
+ */
+void
+ec_bitmap_apply_buf(struct ec_bdev *ec, const void *buf)
+{
+	const struct ec_bitmap_header *hdr       = buf;
+	const uint64_t                *span      = (const uint64_t *)(hdr + 1);
+	uint64_t                       hdr_words = EC_BITMAP_WORDS(hdr->num_stripes);
+	uint64_t                       map_words = EC_BITMAP_WORDS(ec->num_stripes);
+
+	/*
+	 * Copy the blob's span; zero any stripes added since it was written
+	 * (a pre-resize blob has fewer). validate_buf ensured hdr_words <=
+	 * map_words.
+	 */
+	memcpy(ec->stripe_unmapped_map, span, hdr_words * sizeof(uint64_t));
+	if (map_words > hdr_words) {
+		memset(ec->stripe_unmapped_map + hdr_words, 0,
+		       (map_words - hdr_words) * sizeof(uint64_t));
+	}
+}
+
+/* =========================================================================
+ * Async I/O: persist and load chains
+ *
+ * The bitmap region at the front of every disk is laid out as two slots
+ * (copy A / copy B), each occupying the same number of strips. A persist
+ * writes the inactive slot on every online writable disk; a load scans the
+ * bitmap and commit copies and picks the highest-generation copy that a commit
+ * record stamps.
+ *
+ * Slot LBA on disk d, copy c is c * slot_reserved_blocks. The same value
+ * on every disk -- raw replication, no per-disk geometry.
+ * ========================================================================= */
+
+/*
+ * One slot's reserved size, in blocks: half the two-slot reservation.
+ * Sized from the max stripe count, so it never changes on resize. This is
+ * what places the slots -- copy B stays at the same LBA after a grow.
+ */
+static uint64_t
+ec_bitmap_slot_reserved_blocks(const struct ec_bdev *ec)
+{
+	return (ec_bitmap_reservation_stripes(ec) / 2) * ec->strip_size;
+}
+
+static uint64_t
+ec_bitmap_slot_lba_blocks(const struct ec_bdev *ec, uint8_t copy)
+{
+	return (uint64_t)copy * ec_bitmap_slot_reserved_blocks(ec);
+}
+
+/*
+ * Bytes read or written for one slot at the current size: header + span +
+ * CRC, rounded up to a whole strip. Sizes the DMA buffer and the I/O
+ * length, and never exceeds one reserved slot.
+ */
+static uint64_t
+ec_bitmap_slot_io_blocks(const struct ec_bdev *ec)
+{
+	uint64_t strip_bytes  = ec->strip_size * ec->bdev.blocklen;
+	uint64_t slot_extent  = ec_bitmap_blob_bytes(ec->num_stripes) +
+				sizeof(uint32_t);
+	uint64_t slot_strips  = (slot_extent + strip_bytes - 1) / strip_bytes;
+	uint64_t io_blocks    = slot_strips * ec->strip_size;
+
+	/*
+	 * Backstop the placement invariant: the I/O extent must fit inside one
+	 * reserved slot, or a persist would write past it into the WIB strips
+	 * and user data. ec_compute_geometry / ec_bdev_resize keep num_stripes
+	 * <= ec_max_num_stripes, which guarantees this.
+	 */
+	assert(io_blocks <= ec_bitmap_slot_reserved_blocks(ec));
+
+	return io_blocks;
+}
+
+/* -------------------------------------------------------------------------
+ * Persist
+ * ------------------------------------------------------------------------- */
+
+/*
+ * Context for one in-flight persist. The DMA buffer holds the
+ * serialised blob (header + span + CRC + trailing slack to the strip
+ * boundary) and is shared by every disk's write -- raw replication
+ * writes identical bytes to every disk.
+ *
+ * Lifecycle: alloc on submit, freed in the write-completion callback
+ * once the last in-flight write completes. Two callbacks are wired:
+ *
+ *   cb_durable fires at the m+1-ack moment (or, on failure, at full
+ *   drainout) -- the caller's "durability achieved" hook. UNMAP uses
+ *   this to apply staged->live and release its caller before slow
+ *   disks finish.
+ *
+ *   cb_drained fires at full drainout, after bitmap_persist_in_flight
+ *   has been cleared -- the caller's "this persist is fully settled"
+ *   hook. Bootstrap uses this to chain the second-slot persist
+ *   without racing the first one's stragglers.
+ *
+ * Either callback may be NULL. bitmap_persist_in_flight stays true
+ * until drainout regardless of when cb_durable fires, so a second
+ * persist arriving in the post-ack-pre-drainout window is blocked
+ * (with -EBUSY); this is the correctness invariant that prevents
+ * straggler writes from a previous persist overwriting fresh writes
+ * from a subsequent persist on the same slot LBA.
+ */
+struct ec_bitmap_persist_ctx {
+	struct ec_bdev          *ec;
+	void                    *dma_buf;       /* round 1: the bitmap blob            */
+	void                    *commit_buf;    /* round 2: the commit record (stamp)  */
+	uint64_t                 committed_gen; /* generation this persist commits     */
+	uint32_t                 blob_crc;      /* CRC of the blob, recorded in the stamp */
+	uint8_t                  next_copy;     /* bitmap slot the blob is written to   */
+	uint8_t                  commit_copy;   /* commit slot the stamp is written to  */
+	bool                     commit_phase;  /* false: blob round; true: stamp round */
+	uint32_t                 writes_in_flight;
+	uint32_t                 successes;
+	uint32_t                 required;
+	bool                     acked;
+	int                      first_err;
+	ec_bitmap_persist_cb_fn  cb_durable;
+	void                    *cb_durable_arg;
+	ec_bitmap_persist_cb_fn  cb_drained;
+	void                    *cb_drained_arg;
+};
+
+static void ec_bitmap_persist_write_cb(struct spdk_bdev_io *bdev_io, bool success,
+				       void *cb_arg);
+
+/*
+ * Issue one persist round: write buf (size_bytes) to lba_blocks on every
+ * writable disk, accumulating writes_in_flight and first_err in ctx.
+ * ec_bitmap_persist_write_cb drives the round to completion.
+ */
+static void
+ec_bitmap_persist_issue_round(struct ec_bitmap_persist_ctx *ctx, void *buf,
+			      uint64_t lba_blocks, uint64_t size_bytes)
+{
+	struct ec_bdev *ec = ctx->ec;
+	uint32_t        i;
+	int             rc;
+
+	for (i = 0; i < ec->n; i++) {
+		if (!ec->descs[i] || !ec->bitmap_chans[i] ||
+		    !ec_slot_is_writable(ec, i)) {
+			continue;
+		}
+
+		ctx->writes_in_flight++;
+		rc = spdk_bdev_write(ec->descs[i], ec->bitmap_chans[i], buf,
+				     lba_blocks * ec->bdev.blocklen, size_bytes,
+				     ec_bitmap_persist_write_cb, ctx);
+		if (rc != 0) {
+			SPDK_WARNLOG("EC bdev %s: bitmap persist submit failed "
+				     "for slot %u (rc=%d)\n",
+				     ec->bdev.name, i, rc);
+			ctx->writes_in_flight--;
+			if (ctx->first_err == 0) {
+				ctx->first_err = rc;
+			}
+		}
+	}
+}
+
+/*
+ * Round 1 put the blob on m+1 disks, so it is durable and safe to stamp. Write
+ * a commit record -- naming this generation, the blob's slot, and its CRC -- to
+ * the inactive commit slot on every writable disk. The stamp is written only
+ * here, after the blob is durable, so any surviving stamp proves its blob
+ * reached m+1.
+ *
+ * Reuses the round accounting (successes/required/writes_in_flight), reset for
+ * the stamp round. Its threshold is the blob round's, so a disk lost between
+ * rounds is reported as a persist failure.
+ */
+static void
+ec_bitmap_persist_begin_commit_phase(struct ec_bitmap_persist_ctx *ctx)
+{
+	struct ec_bdev *ec = ctx->ec;
+	uint64_t        commit_lba_blocks;
+
+	ctx->commit_phase = true;
+	ctx->commit_copy  = 1 - ec->bitmap_commit_active_copy;
+	ctx->successes    = 0;
+	ctx->first_err    = 0;
+
+	ec_bitmap_commit_fill_buf(ctx->committed_gen, ctx->blob_crc, ctx->commit_buf);
+
+	commit_lba_blocks = ec_bitmap_commit_lba(ec, ctx->commit_copy);
+	ec_bitmap_persist_issue_round(ctx, ctx->commit_buf, commit_lba_blocks,
+				      ec->bdev.blocklen);
+}
+
+static void
+ec_bitmap_persist_write_cb(struct spdk_bdev_io *bdev_io, bool success,
+			   void *cb_arg)
+{
+	struct ec_bitmap_persist_ctx *ctx = cb_arg;
+	struct ec_bdev               *ec  = ctx->ec;
+	int                           final_rc;
+
+	spdk_bdev_free_io(bdev_io);
+
+	if (success) {
+		ctx->successes++;
+	} else if (ctx->first_err == 0) {
+		ctx->first_err = -EIO;
+		SPDK_WARNLOG("EC bdev %s: bitmap persist write failed (%s round)\n",
+			     ec->bdev.name, ctx->commit_phase ? "stamp" : "blob");
+	}
+
+	/*
+	 * The ack fires only in the stamp round: an UNMAP is durable once its
+	 * blob and stamp both reach m+1 disks. Flip both slot indices here, at the
+	 * ack rather than at blob-round drainout, so bitmap_active_copy follows
+	 * the committed generation. After a partial stamp it stays on the last
+	 * committed slot, so the next persist writes the other slot
+	 * (next_copy = 1 - active) and cannot overwrite the committed blob.
+	 *
+	 * bitmap_persist_in_flight stays set until drainout, so the next persist
+	 * cannot reuse a slot while this one's writes are still in flight.
+	 */
+	if (ctx->commit_phase && !ctx->acked && ctx->successes >= ctx->required) {
+		assert(ctx->required >= 1 && ctx->required <= ec->m + 1);
+		ctx->acked                    = true;
+		ec->bitmap_active_copy        = ctx->next_copy;
+		ec->bitmap_commit_active_copy = ctx->commit_copy;
+		if (ctx->cb_durable) {
+			ctx->cb_durable(ctx->cb_durable_arg, 0);
+		}
+	}
+
+	ctx->writes_in_flight--;
+	if (ctx->writes_in_flight != 0) {
+		return;
+	}
+
+	/*
+	 * Saving the bitmap is two write rounds: the blob round writes the
+	 * bitmap itself, then the stamp round writes a commit record marking it
+	 * saved (on reload, a bitmap without its stamp is ignored).
+	 *
+	 * We reach here when the blob round has finished. If enough copies
+	 * landed to survive the tolerated disk failures, the bitmap is durable,
+	 * so start the stamp round -- its writes re-enter this callback with
+	 * commit_phase set. Switch the active copy to the new bitmap only after
+	 * its stamp is durable too, so a bitmap whose stamp falls short never
+	 * goes live.
+	 *
+	 * If not enough copies landed to be safe, skip the stamp and fail the
+	 * save below -- with no stamp, reload ignores this version.
+	 *
+	 * The stamp waits for the whole blob round to finish, not just its m+1
+	 * ack, so only one round is in flight at a time. The cost is tail
+	 * latency: a slow blob write holds cb_durable -- and every UNMAP behind
+	 * it -- until it lands. A hung write is bounded by the ctrlr-loss abort,
+	 * a slow-but-alive one is not. Stamping at the blob's m+1 ack would
+	 * recover the latency (different slot, no conflict) by overlapping two
+	 * rounds; revisit if degraded-disk UNMAP tails matter.
+	 */
+	if (!ctx->commit_phase && ctx->successes >= ctx->required) {
+		ec_bitmap_persist_begin_commit_phase(ctx);
+		if (ctx->writes_in_flight != 0) {
+			return;  /* stamp round now in flight */
+		}
+		/* No stamp write got submitted; fall through to fail. */
+	}
+
+	/*
+	 * Last round done (the stamp round, or a failed blob round). Now safe to
+	 * clear bitmap_persist_in_flight so the next persist may begin -- all
+	 * on-disk state from this persist is either committed (blob + stamp) or
+	 * terminally failed.
+	 */
+	ec->bitmap_persist_in_flight = false;
+
+	/*
+	 * Release any deferred slot channels before the follow-up persist kick
+	 * below -- otherwise a steady stream of bit-clears would keep restarting
+	 * the persist and starve the cleanup. Never frees ec.
+	 */
+	ec_drain_deferred_slot_releases(ec);
+
+	/*
+	 * If write-into-unmapped completions queued bit-clears while this
+	 * persist was in flight (whether THIS persist was their kick or it
+	 * was somebody else's, e.g., UNMAP), fire a single follow-up
+	 * persist covering all of them. The kick must come BEFORE any
+	 * cb_drained that might itself enqueue new bit-clears recursively;
+	 * if it does, those land on pending_bit_clears and the next persist
+	 * drainout picks them up -- the recursion is naturally bounded.
+	 */
+	ec_bit_clear_flush_if_pending(ec);
+
+	/*
+	 * Fire the resync a hot-swap deferred behind this persist. Runs
+	 * before the ctx free below, so a launched persist re-defers teardown
+	 * behind itself instead of racing the free.
+	 */
+	if (ec->bitmap_resync_pending && !ec->bitmap_persist_in_flight) {
+		ec->bitmap_resync_pending = false;
+		ec_bitmap_resync_after_replace(ec);
+	}
+
+	if (!ctx->acked) {
+		/*
+		 * A round fell short of its threshold; report the failure via
+		 * cb_durable. The on-disk state stays safe: an unstamped generation is
+		 * not adopted on load, and a generation exposed by a surviving partial
+		 * stamp has a durable blob behind it.
+		 */
+		SPDK_ERRLOG("EC bdev %s: bitmap persist did not reach durability "
+			    "threshold (succeeded=%u, required=%u, %s round)\n",
+			    ec->bdev.name, ctx->successes, ctx->required,
+			    ctx->commit_phase ? "stamp" : "blob");
+		final_rc = ctx->first_err ? ctx->first_err : -EIO;
+		if (ctx->cb_durable) {
+			ctx->cb_durable(ctx->cb_durable_arg, final_rc);
+		}
+	} else {
+		final_rc = 0;
+	}
+
+	if (ctx->cb_drained) {
+		ctx->cb_drained(ctx->cb_drained_arg, final_rc);
+	}
+
+	spdk_dma_free(ctx->dma_buf);
+	spdk_dma_free(ctx->commit_buf);
+	free(ctx);
+
+	/*
+	 * Last statement: finish a deferred delete. In that case this frees ec,
+	 * so nothing may touch ec after this call.
+	 */
+	ec_drain_deferred_unregister(ec);
+}
+
+/*
+ * Why bitmap persists triggered by I/O paths (UNMAP, write-into-unmapped)
+ * route to the home thread instead of running on each ec_io_channel's
+ * own bitmap_chans[]:
+ *
+ * The same bitmap blob is written to every disk on every persist. The
+ * consistency model needs a single writer to keep three coordination
+ * signals well-defined:
+ *
+ *   - bitmap_active_copy. Each persist writes the slot the active copy
+ *     is NOT in (next_copy = 1 - active_copy). Two writers both reading
+ *     active_copy = 0 would both write slot 1; their bytes interleave
+ *     and the loaded blob fails CRC.
+ *   - bitmap_generation. Monotonic counter, incremented by exactly one
+ *     writer per persist. Two writers both reading N and both writing
+ *     N+1 with different content break the "highest committed generation
+ *     wins" rule that ec_bitmap_load_async relies on to pick the committed copy.
+ *   - cb_drained. Fires when every write for THIS persist has acked,
+ *     which gates the next bit-clear flush. Concurrent persists make
+ *     "all acked" ambiguous (which persist?); the flush ordering
+ *     breaks.
+ *
+ * Distributing writers across per-channel bitmap_chans[] would mean a
+ * new coordination protocol: atomic generation counters, cross-channel
+ * drainout, a cross-thread lock on bitmap_persist_in_flight. That is a
+ * different on-disk consistency story -- a new storage protocol, not
+ * a refactor of this one. Routing each persist trigger to the home
+ * thread via spdk_thread_send_msg keeps the existing single-writer
+ * model. One cross-thread message per persist costs microseconds and
+ * preserves every invariant verbatim.
+ */
+
+int
+ec_bitmap_persist_async(struct ec_bdev *ec, const uint64_t *source_map,
+			ec_bitmap_persist_cb_fn cb_durable, void *cb_durable_arg,
+			ec_bitmap_persist_cb_fn cb_drained, void *cb_drained_arg)
+{
+	struct ec_bitmap_persist_ctx *ctx;
+	uint64_t slot_lba_blocks;
+	uint64_t slot_size_blocks;
+	uint64_t slot_size_bytes;
+
+	/*
+	 * Home-thread only: this function uses bitmap_chans[] (thread-affine
+	 * to the creation thread) and mutates bitmap_persist_in_flight,
+	 * bitmap_active_copy, and bitmap_generation. I/O-path callers (UNMAP,
+	 * write-into-unmapped's bit-clear) route here via the helpers above.
+	 */
+	assert(spdk_get_thread() == ec->home_thread);
+	uint32_t n_writable = 0;
+	uint32_t i;
+	int      rc;
+
+	if (ec->bitmap_persist_in_flight) {
+		return -EBUSY;
+	}
+
+	ctx = calloc(1, sizeof(*ctx));
+	if (!ctx) {
+		return -ENOMEM;
+	}
+
+	slot_size_blocks = ec_bitmap_slot_io_blocks(ec);
+	slot_size_bytes  = slot_size_blocks * ec->bdev.blocklen;
+
+	ctx->dma_buf = spdk_dma_zmalloc(slot_size_bytes, EC_DMA_ALIGN, NULL);
+	if (!ctx->dma_buf) {
+		free(ctx);
+		return -ENOMEM;
+	}
+
+	/* One block holds the commit record (stamp) plus its CRC trailer. */
+	ctx->commit_buf = spdk_dma_zmalloc(ec->bdev.blocklen, EC_DMA_ALIGN, NULL);
+	if (!ctx->commit_buf) {
+		spdk_dma_free(ctx->dma_buf);
+		free(ctx);
+		return -ENOMEM;
+	}
+
+	/* Count writable, attached disks with channels available. */
+	for (i = 0; i < ec->n; i++) {
+		if (ec->descs[i] && ec->bitmap_chans[i] &&
+		    ec_slot_is_writable(ec, i)) {
+			n_writable++;
+		}
+	}
+	if (n_writable == 0) {
+		spdk_dma_free(ctx->dma_buf);
+		spdk_dma_free(ctx->commit_buf);
+		free(ctx);
+		return -EIO;
+	}
+
+	ec->bitmap_generation++;
+
+	ctx->ec              = ec;
+	ctx->next_copy       = 1 - ec->bitmap_active_copy;
+	ctx->committed_gen   = ec->bitmap_generation;
+	ctx->required        = spdk_min(n_writable, ec->m + 1);
+	ctx->cb_durable      = cb_durable;
+	ctx->cb_durable_arg  = cb_durable_arg;
+	ctx->cb_drained      = cb_drained;
+	ctx->cb_drained_arg  = cb_drained_arg;
+
+	/*
+	 * Serialise once into the shared DMA buffer; raw replication means
+	 * every disk receives the same bytes.
+	 */
+	ec_bitmap_fill_buf(ec, source_map, ec->bitmap_generation, ctx->dma_buf);
+
+	/* The stamp records the CRC fill_buf wrote at the blob's trailer. */
+	ctx->blob_crc = *(const uint32_t *)((const uint8_t *)ctx->dma_buf +
+					    ec_bitmap_blob_bytes(ec->num_stripes));
+
+	slot_lba_blocks = ec_bitmap_slot_lba_blocks(ec, ctx->next_copy);
+
+	ec->bitmap_persist_in_flight = true;
+
+	ec_bitmap_persist_issue_round(ctx, ctx->dma_buf, slot_lba_blocks,
+				      slot_size_bytes);
+
+	if (ctx->writes_in_flight == 0) {
+		/*
+		 * No write got submitted. Roll the persist back synchronously
+		 * -- the caller treats this exactly like any other -errno
+		 * return, and cb is not invoked.
+		 */
+		ec->bitmap_persist_in_flight = false;
+		rc = ctx->first_err ? ctx->first_err : -EIO;
+		spdk_dma_free(ctx->dma_buf);
+		spdk_dma_free(ctx->commit_buf);
+		free(ctx);
+		return rc;
+	}
+
+	return 0;
+}
+
+/*
+ * Two chained persists overwrite both bitmap copies (and both commit copies)
+ * on every writable disk with the current map. cb_drained (not cb_durable)
+ * gates the second persist: starting it before the first fully drains would
+ * let the first's straggler writes race the second on the slot it overwrites.
+ *
+ * Persist 1: gen N   -> slot 1 - active.
+ * Persist 2: gen N+1 -> the other slot (active flipped after persist 1's ack).
+ */
+struct ec_bitmap_persist_both_ctx {
+	struct ec_bdev          *ec;
+	ec_bitmap_persist_cb_fn  done_fn;
+	void                    *done_arg;
+};
+
+/* Report the final outcome and free the ctx. Signature matches
+ * ec_bitmap_persist_cb_fn so it also serves as the second persist's cb_drained. */
+static void
+ec_bitmap_persist_both_report(void *arg, int rc)
+{
+	struct ec_bitmap_persist_both_ctx *sctx     = arg;
+	ec_bitmap_persist_cb_fn     done_fn  = sctx->done_fn;
+	void                       *done_arg = sctx->done_arg;
+
+	free(sctx);
+	if (done_fn) {
+		done_fn(done_arg, rc);
+	}
+}
+
+/* First persist drained; chain the second onto the other slot. */
+static void
+ec_bitmap_persist_both_first_done(void *arg, int rc)
+{
+	struct ec_bitmap_persist_both_ctx *sctx = arg;
+	int                         persist_rc;
+
+	if (rc != 0) {
+		ec_bitmap_persist_both_report(sctx, rc);
+		return;
+	}
+
+	persist_rc = ec_bitmap_persist_async(sctx->ec, sctx->ec->stripe_unmapped_map,
+					     NULL, NULL,
+					     ec_bitmap_persist_both_report, sctx);
+	if (persist_rc != 0) {
+		ec_bitmap_persist_both_report(sctx, persist_rc);
+	}
+}
+
+int
+ec_bitmap_persist_both_copies(struct ec_bdev *ec,
+			   ec_bitmap_persist_cb_fn done_fn, void *done_arg)
+{
+	struct ec_bitmap_persist_both_ctx *sctx;
+	int                         rc;
+
+	assert(spdk_get_thread() == ec->home_thread);
+
+	sctx = calloc(1, sizeof(*sctx));
+	if (!sctx) {
+		return -ENOMEM;
+	}
+	sctx->ec       = ec;
+	sctx->done_fn  = done_fn;
+	sctx->done_arg = done_arg;
+
+	rc = ec_bitmap_persist_async(ec, ec->stripe_unmapped_map, NULL, NULL,
+				     ec_bitmap_persist_both_first_done, sctx);
+	if (rc != 0) {
+		free(sctx);
+		return rc;
+	}
+	return 0;
+}
+
+/* Re-arm the resync on persist failure so a later persist drainout retries. */
+static void
+ec_bitmap_resync_done(void *arg, int rc)
+{
+	struct ec_bdev *ec = arg;
+
+	if (rc != 0) {
+		SPDK_WARNLOG("EC bdev %s: replace bitmap resync failed "
+			     "(rc=%d); retrying on the next bitmap persist\n",
+			     ec->bdev.name, rc);
+		ec->bitmap_resync_pending = true;
+	}
+}
+
+/*
+ * Rejoin a hot-swapped slot to the bitmap quorum by overwriting both copies with
+ * the current map (same protection as fresh create). If a persist is already
+ * in flight, or the bdev is tearing down, defer via bitmap_resync_pending -- a
+ * later persist drainout retries it (or drops it if the bdev is being deleted).
+ * Best-effort; home-thread only.
+ *
+ * Under steady persist traffic this resync may never fire, which is harmless:
+ * ordinary persists alternate slots, so two of them already cover both copies
+ * on the reopened slot. It exists for the quiet-volume case.
+ */
+void
+ec_bitmap_resync_after_replace(struct ec_bdev *ec)
+{
+	int rc;
+
+	assert(spdk_get_thread() == ec->home_thread);
+
+	if (ec->bitmap_persist_in_flight || ec->unregister_release_pending) {
+		ec->bitmap_resync_pending = true;
+		return;
+	}
+
+	rc = ec_bitmap_persist_both_copies(ec, ec_bitmap_resync_done, ec);
+	if (rc != 0) {
+		SPDK_WARNLOG("EC bdev %s: replace bitmap resync submit "
+			     "failed (rc=%d); retrying on the next bitmap "
+			     "persist\n", ec->bdev.name, rc);
+		ec->bitmap_resync_pending = true;
+	}
+}
+
+/* -------------------------------------------------------------------------
+ * Load
+ *
+ * Two serial scans, then a re-read. First scan the commit region and collect
+ * every CRC-valid stamp; then scan the bitmap region and collect every
+ * CRC-valid copy as a {generation, blob_crc, disk, slot} candidate.
+ * ec_bitmap_select_committed picks the highest-generation copy that a stamp
+ * commits (matching generation AND blob_crc), and the selected copy is re-read from
+ * its slot and applied. A torn re-read drops that candidate and re-selects --
+ * another copy of the same committed generation, or the next committed
+ * generation, takes its place.
+ *
+ * Only stamped generations are adopted: a sub-threshold partial persist (no
+ * stamp) is never picked, which is the durability gate. Memory stays bounded
+ * at one slot buffer plus the small scalar candidate arrays, regardless of
+ * disk count or volume size; load is one-shot at startup, so the extra reads
+ * (commit scan plus the selected-copy re-read) are acceptable.
+ * ------------------------------------------------------------------------- */
+
+#define EC_BITMAP_LOAD_MAX_COPIES (2 * EC_MAX_BASE_BDEVS)
+
+struct ec_bitmap_load_ctx {
+	struct ec_bdev      *ec;
+
+	void                *read_buf;        /* scan reads and the selected-copy re-read */
+	uint64_t             slot_size_bytes;
+
+	uint32_t             cur_disk;        /* base-bdev slot 0..n-1 */
+	uint8_t              cur_copy;        /* 0 or 1                */
+	bool                 scanning_commits; /* true: commit scan; false: bitmap scan */
+
+	/*
+	 * Candidates collected by the two scans, one entry per CRC-valid
+	 * {disk, slot}. The parallel arrays map a chosen bitmap candidate back to
+	 * its on-disk location for the re-read, and a stamp back to its slot.
+	 */
+	struct ec_bitmap_gen_crc commit_gc[EC_BITMAP_LOAD_MAX_COPIES];
+	uint8_t                  commit_slot[EC_BITMAP_LOAD_MAX_COPIES];
+	uint32_t                 n_commits;
+
+	struct ec_bitmap_gen_crc bitmap_gc[EC_BITMAP_LOAD_MAX_COPIES];
+	uint32_t                 bitmap_disk[EC_BITMAP_LOAD_MAX_COPIES];
+	uint8_t                  bitmap_copy[EC_BITMAP_LOAD_MAX_COPIES];
+	uint32_t                 n_bitmaps;
+
+	uint32_t                 selected_idx; /* selected bitmap candidate, being re-read */
+
+	ec_bdev_create_cb_fn done_fn;
+	void                *done_arg;
+};
+
+static void ec_bitmap_load_select(struct ec_bitmap_load_ctx *ctx);
+static void ec_bitmap_load_scan_continue(struct ec_bitmap_load_ctx *ctx);
+
+static void
+ec_bitmap_load_finish(struct ec_bitmap_load_ctx *ctx)
+{
+	ec_bdev_create_cb_fn done_fn = ctx->done_fn;
+	void *done_arg = ctx->done_arg;
+
+	spdk_dma_free(ctx->read_buf);
+	free(ctx);
+
+	done_fn(done_arg, 0);
+}
+
+/*
+ * The commit slot whose stamp commits (gen, blob_crc). select_committed only
+ * returns stamped copies, so a miss is a logic error -- asserted, and 0 in a
+ * release build.
+ */
+static uint8_t
+ec_bitmap_load_commit_slot(const struct ec_bitmap_load_ctx *ctx,
+			   uint64_t gen, uint32_t blob_crc)
+{
+	uint32_t i;
+
+	for (i = 0; i < ctx->n_commits; i++) {
+		if (ctx->commit_gc[i].generation == gen &&
+		    ctx->commit_gc[i].blob_crc == blob_crc) {
+			return ctx->commit_slot[i];
+		}
+	}
+
+	assert(false && "selected copy must have a matching stamp");
+	return 0;
+}
+
+/* Drop bitmap candidate idx by swapping in the last one; order does not matter. */
+static void
+ec_bitmap_load_drop_candidate(struct ec_bitmap_load_ctx *ctx, uint32_t idx)
+{
+	uint32_t last = --ctx->n_bitmaps;
+
+	ctx->bitmap_gc[idx]   = ctx->bitmap_gc[last];
+	ctx->bitmap_disk[idx] = ctx->bitmap_disk[last];
+	ctx->bitmap_copy[idx] = ctx->bitmap_copy[last];
+}
+
+/* Advance the scan cursor: copy 0 -> copy 1 on the same disk, then next disk. */
+static void
+ec_bitmap_load_next_copy(struct ec_bitmap_load_ctx *ctx)
+{
+	if (ctx->cur_copy == 0) {
+		ctx->cur_copy = 1;
+	} else {
+		ctx->cur_copy = 0;
+		ctx->cur_disk++;
+	}
+}
+
+/*
+ * Selected-copy re-read completion. The slot must re-validate and still match the
+ * candidate select_committed chose; a torn slot drops the candidate and
+ * re-selects, so another copy of the same committed generation (or the next
+ * committed generation) takes over.
+ */
+static void
+ec_bitmap_load_apply_read_cb(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg)
+{
+	struct ec_bitmap_load_ctx *ctx = cb_arg;
+	struct ec_bdev            *ec  = ctx->ec;
+	uint32_t                   idx = ctx->selected_idx;
+	uint64_t                   gen;
+	uint32_t                   blob_crc;
+
+	spdk_bdev_free_io(bdev_io);
+
+	if (success &&
+	    ec_bitmap_validate_buf(ec, ctx->read_buf, &gen, &blob_crc) == 0 &&
+	    gen == ctx->bitmap_gc[idx].generation &&
+	    blob_crc == ctx->bitmap_gc[idx].blob_crc) {
+		ec_bitmap_apply_buf(ec, ctx->read_buf);
+		ec->bitmap_generation         = gen;
+		ec->bitmap_active_copy        = ctx->bitmap_copy[idx];
+		ec->bitmap_commit_active_copy = ec_bitmap_load_commit_slot(ctx, gen, blob_crc);
+		SPDK_NOTICELOG("EC bdev %s: bitmap loaded (gen %" PRIu64 ", slot %u)\n",
+			       ec->bdev.name, gen, ctx->bitmap_copy[idx]);
+		ec_bitmap_load_finish(ctx);
+		return;
+	}
+
+	SPDK_WARNLOG("EC bdev %s: committed bitmap copy at disk %u slot %u failed "
+		     "re-read -- trying another\n", ec->bdev.name,
+		     ctx->bitmap_disk[idx], ctx->bitmap_copy[idx]);
+	ec_bitmap_load_drop_candidate(ctx, idx);
+	ec_bitmap_load_select(ctx);
+}
+
+/*
+ * Pick the highest committed bitmap candidate and re-read it to apply. A
+ * candidate whose re-read cannot even be submitted is dropped here; a torn
+ * re-read is handled by the completion. When nothing is committed the map is
+ * left zero -- a fresh or unrecoverable volume.
+ */
+static void
+ec_bitmap_load_select(struct ec_bitmap_load_ctx *ctx)
+{
+	struct ec_bdev *ec = ctx->ec;
+
+	while (true) {
+		int      idx = ec_bitmap_select_committed(ctx->bitmap_gc, ctx->n_bitmaps,
+							  ctx->commit_gc, ctx->n_commits);
+		uint32_t disk;
+		int      rc;
+
+		if (idx < 0) {
+			SPDK_NOTICELOG("EC bdev %s: no committed bitmap copy found -- "
+				       "stripe_unmapped_map left zero\n", ec->bdev.name);
+			ec_bitmap_load_finish(ctx);
+			return;
+		}
+
+		ctx->selected_idx = (uint32_t)idx;
+		disk            = ctx->bitmap_disk[idx];
+
+		rc = spdk_bdev_read(ec->descs[disk], ec->bitmap_chans[disk],
+				    ctx->read_buf,
+				    ec_bitmap_slot_lba_blocks(ec, ctx->bitmap_copy[idx])
+				    * ec->bdev.blocklen,
+				    ctx->slot_size_bytes,
+				    ec_bitmap_load_apply_read_cb, ctx);
+		if (rc == 0) {
+			return;  /* re-read submitted; completion applies or retries */
+		}
+
+		SPDK_WARNLOG("EC bdev %s: re-read submit failed for disk %u slot %u "
+			     "(rc=%d) -- trying another\n", ec->bdev.name, disk,
+			     ctx->bitmap_copy[idx], rc);
+		ec_bitmap_load_drop_candidate(ctx, (uint32_t)idx);
+	}
+}
+
+/* Collect a CRC-valid copy at the current scan position into the candidates. */
+static void
+ec_bitmap_load_scan_read_cb(struct spdk_bdev_io *bdev_io, bool success, void *cb_arg)
+{
+	struct ec_bitmap_load_ctx *ctx = cb_arg;
+	struct ec_bdev            *ec  = ctx->ec;
+	uint64_t                   gen;
+	uint32_t                   blob_crc;
+
+	spdk_bdev_free_io(bdev_io);
+
+	if (success && ctx->scanning_commits) {
+		if (ec_bitmap_commit_validate_buf(ctx->read_buf, &gen, &blob_crc) == 0 &&
+		    ctx->n_commits < EC_BITMAP_LOAD_MAX_COPIES) {
+			ctx->commit_gc[ctx->n_commits].generation = gen;
+			ctx->commit_gc[ctx->n_commits].blob_crc   = blob_crc;
+			ctx->commit_slot[ctx->n_commits]          = ctx->cur_copy;
+			ctx->n_commits++;
+		}
+	} else if (success &&
+		   ec_bitmap_validate_buf(ec, ctx->read_buf, &gen, &blob_crc) == 0 &&
+		   ctx->n_bitmaps < EC_BITMAP_LOAD_MAX_COPIES) {
+		ctx->bitmap_gc[ctx->n_bitmaps].generation = gen;
+		ctx->bitmap_gc[ctx->n_bitmaps].blob_crc   = blob_crc;
+		ctx->bitmap_disk[ctx->n_bitmaps]          = ctx->cur_disk;
+		ctx->bitmap_copy[ctx->n_bitmaps]          = ctx->cur_copy;
+		ctx->n_bitmaps++;
+	}
+
+	ec_bitmap_load_next_copy(ctx);
+	ec_bitmap_load_scan_continue(ctx);
+}
+
+/*
+ * Serial scan driver. Reads each {disk, slot} of the current region into
+ * read_buf; the completion collects CRC-valid candidates. When the commit
+ * region is done it restarts the cursor over the bitmap region; when the
+ * bitmap region is done it hands off to ec_bitmap_load_select.
+ */
+static void
+ec_bitmap_load_scan_continue(struct ec_bitmap_load_ctx *ctx)
+{
+	struct ec_bdev *ec = ctx->ec;
+	int             rc;
+
+	while (ctx->cur_disk < ec->n) {
+		uint32_t disk = ctx->cur_disk;
+		uint64_t lba_blocks;
+		uint64_t io_bytes;
+
+		if (!ec->descs[disk] || !ec->bitmap_chans[disk] ||
+		    !ec_slot_is_readable(ec, disk)) {
+			ctx->cur_disk++;
+			ctx->cur_copy = 0;
+			continue;
+		}
+
+		if (ctx->scanning_commits) {
+			lba_blocks = ec_bitmap_commit_lba(ec, ctx->cur_copy);
+			io_bytes   = ec->bdev.blocklen;
+		} else {
+			lba_blocks = ec_bitmap_slot_lba_blocks(ec, ctx->cur_copy);
+			io_bytes   = ctx->slot_size_bytes;
+		}
+
+		rc = spdk_bdev_read(ec->descs[disk], ec->bitmap_chans[disk],
+				    ctx->read_buf, lba_blocks * ec->bdev.blocklen,
+				    io_bytes, ec_bitmap_load_scan_read_cb, ctx);
+		if (rc != 0) {
+			SPDK_WARNLOG("EC bdev %s: bitmap load read submit failed for %s "
+				     "disk %u slot %u (rc=%d) -- skipping\n", ec->bdev.name,
+				     ctx->scanning_commits ? "commit" : "bitmap", disk,
+				     ctx->cur_copy, rc);
+			ec_bitmap_load_next_copy(ctx);
+			continue;
+		}
+
+		return;  /* I/O submitted; callback drives the next step. */
+	}
+
+	if (ctx->scanning_commits) {
+		/* Commit region scanned; restart the cursor over the bitmap region. */
+		ctx->scanning_commits = false;
+		ctx->cur_disk = 0;
+		ctx->cur_copy = 0;
+		ec_bitmap_load_scan_continue(ctx);
+		return;
+	}
+
+	ec_bitmap_load_select(ctx);
+}
+
+void
+ec_bitmap_load_async(struct ec_bdev *ec,
+		     ec_bdev_create_cb_fn done_fn, void *done_arg)
+{
+	struct ec_bitmap_load_ctx *ctx;
+
+	ctx = calloc(1, sizeof(*ctx));
+	if (!ctx) {
+		SPDK_ERRLOG("EC bdev %s: OOM for bitmap load ctx\n",
+			    ec->bdev.name);
+		done_fn(done_arg, -ENOMEM);
+		return;
+	}
+
+	ctx->slot_size_bytes = ec_bitmap_slot_io_blocks(ec) * ec->bdev.blocklen;
+	ctx->read_buf = spdk_dma_zmalloc(ctx->slot_size_bytes, EC_DMA_ALIGN, NULL);
+	if (!ctx->read_buf) {
+		SPDK_ERRLOG("EC bdev %s: OOM for bitmap load buffer "
+			    "(slot_size=%" PRIu64 " bytes)\n",
+			    ec->bdev.name, ctx->slot_size_bytes);
+		free(ctx);
+		done_fn(done_arg, -ENOMEM);
+		return;
+	}
+
+	ctx->ec               = ec;
+	ctx->scanning_commits = true;
+	ctx->done_fn          = done_fn;
+	ctx->done_arg         = done_arg;
+	/* cursor and candidate counts are zero (calloc'd); commit scan runs first */
+
+	ec_bitmap_load_scan_continue(ctx);
+}
+
+/* -------------------------------------------------------------------------
+ * Status query
+ * ------------------------------------------------------------------------- */
+
+/*
+ * Count set bits in stripe_unmapped_map. Returns 0 if the map is not
+ * yet allocated. Linear popcount; tens of K words for a multi-TiB
+ * volume, so a microsecond-scale scan.
+ */
+uint64_t
+ec_count_unmapped_stripes(const struct ec_bdev *ec)
+{
+	uint64_t map_words;
+	uint64_t total = 0;
+	uint64_t i;
+
+	if (!ec->stripe_unmapped_map) {
+		return 0;
+	}
+
+	map_words = EC_BITMAP_WORDS(ec->num_stripes);
+	for (i = 0; i < map_words; i++) {
+		total += __builtin_popcountll(ec->stripe_unmapped_map[i]);
+	}
+	return total;
+}
+
+int
+ec_bdev_get_unmap_status(const char *ec_name,
+			 uint64_t   *num_stripes,
+			 uint64_t   *unmapped_stripes,
+			 uint64_t   *blob_bytes,
+			 uint64_t   *generation,
+			 uint8_t    *active_copy,
+			 bool       *persist_pending)
+{
+	struct ec_bdev *ec = ec_bdev_find(ec_name);
+
+	if (!ec) {
+		return -ENODEV;
+	}
+
+	*num_stripes      = ec->num_stripes;
+	*unmapped_stripes = ec_count_unmapped_stripes(ec);
+	*blob_bytes       = ec_bitmap_blob_bytes(ec->num_stripes);
+	*generation       = ec->bitmap_generation;
+	*active_copy      = ec->bitmap_active_copy;
+	*persist_pending  = ec->bitmap_persist_in_flight;
+
+	return 0;
+}
+
+/* =========================================================================
+ * Bit-clear waiter queue
+ *
+ * Used by the write-into-unmapped path to clear stripe_unmapped_map
+ * bits after data has landed. The two-list design (pending vs in_flight)
+ * lets new clears queue while a previous persist is still draining, and
+ * coalesces a burst into one follow-up persist per roundtrip.
+ *
+ * Visibility ordering mirrors UNMAP's staged_map pattern:
+ *   - clear_staged_map = copy of live with target bits cleared
+ *   - on cb_durable (m+1 ack): apply cleared bits to live, invoke waiters
+ *   - on cb_drained (persist fully settled): kick next persist if any
+ *
+ * The in-memory live map is updated ONLY after the persist acks. This is
+ * what makes the post-crash recovery story work: if we crashed between
+ * staging and ack, the on-disk bitmap still reads as "unmapped" for those
+ * stripes, reads synthesise zeros, and the unacked writes are correctly
+ * lost. Updating live before ack would let readers see "mapped" before
+ * the on-disk bitmap recorded it -- a crash window where reads return
+ * real data that may not survive recovery.
+ * ========================================================================= */
+
+static void ec_bit_clear_flush(struct ec_bdev *ec);
+
+static void
+ec_bit_clear_on_durable(void *arg, int rc)
+{
+	struct ec_bdev              *ec = arg;
+	struct ec_pending_bit_clear *w, *tmp;
+
+	/*
+	 * Drain the in_flight list. On success, apply the bit-clear to live
+	 * (the persist's bytes already reflect the cleared state). On
+	 * failure, leave live untouched -- the on-disk bitmap is also
+	 * unchanged, so stripes remain unmapped and reads continue to
+	 * synthesise zeros. The waiter's cb_fn propagates the failure up.
+	 */
+	TAILQ_FOREACH_SAFE(w, &ec->in_flight_bit_clears, link, tmp) {
+		TAILQ_REMOVE(&ec->in_flight_bit_clears, w, link);
+		if (rc == 0) {
+			ec_stripe_clear_unmapped(ec, w->stripe_index);
+		}
+		if (w->cb_fn) {
+			w->cb_fn(w->cb_arg, rc);
+		}
+		free(w);
+	}
+}
+
+static void
+ec_bit_clear_on_drained(void *arg, int rc)
+{
+	struct ec_bdev *ec = arg;
+
+	/*
+	 * Persist committed (rc == 0) or terminally failed (on_durable already
+	 * propagated the failure to waiters). Free the shadow and kick a fresh
+	 * persist if new waiters arrived during drainout. Freeing here -- not
+	 * earlier -- is what makes ec_bit_clear_flush_if_pending's NULL-shadow
+	 * precondition hold for the post-drain kick.
+	 */
+	free(ec->clear_staged_map);
+	ec->clear_staged_map = NULL;
+
+	if (!ec->bitmap_persist_in_flight && !TAILQ_EMPTY(&ec->pending_bit_clears)) {
+		ec_bit_clear_flush(ec);
+	}
+
+	(void)rc;
+}
+
+/*
+ * Move every waiter from pending_bit_clears to in_flight_bit_clears,
+ * build clear_staged_map by copying live and clearing the in-flight
+ * bits, and submit a single persist for the whole batch.
+ *
+ * Precondition: bitmap_persist_in_flight == false, pending list non-empty.
+ *
+ * On submit failure, the in_flight list is drained with the error and
+ * the staged map is freed; clear_staged_map is reset to NULL so the
+ * next kick can start clean.
+ */
+static void
+ec_bit_clear_flush(struct ec_bdev *ec)
+{
+	struct ec_pending_bit_clear *w;
+	uint64_t                     map_words;
+	int                          rc;
+
+	/*
+	 * Home-thread only: touches pending_bit_clears, clear_staged_map, and
+	 * submits a persist via ec_bitmap_persist_async. The legitimate callers
+	 * are the routed enqueue (ec_bit_clear_enqueue_on_home) and the
+	 * waiter-queue follow-up hook (ec_bit_clear_flush_if_pending).
+	 */
+	assert(spdk_get_thread() == ec->home_thread);
+
+	assert(!ec->bitmap_persist_in_flight);
+	assert(!TAILQ_EMPTY(&ec->pending_bit_clears));
+	assert(TAILQ_EMPTY(&ec->in_flight_bit_clears));
+	assert(ec->clear_staged_map == NULL);
+
+	map_words = EC_BITMAP_WORDS(ec->num_stripes);
+	ec->clear_staged_map = calloc(map_words, sizeof(uint64_t));
+	if (!ec->clear_staged_map) {
+		/*
+		 * Allocation failure -- drain waiters with -ENOMEM so callers
+		 * release stripe-busy and the bdev_io fails loudly rather than
+		 * stalling forever. Next kick will retry from scratch.
+		 */
+		while ((w = TAILQ_FIRST(&ec->pending_bit_clears)) != NULL) {
+			TAILQ_REMOVE(&ec->pending_bit_clears, w, link);
+			if (w->cb_fn) {
+				w->cb_fn(w->cb_arg, -ENOMEM);
+			}
+			free(w);
+		}
+		return;
+	}
+
+	memcpy(ec->clear_staged_map, ec->stripe_unmapped_map,
+	       map_words * sizeof(uint64_t));
+
+	/* Move pending -> in_flight, applying each clear to the shadow. */
+	while ((w = TAILQ_FIRST(&ec->pending_bit_clears)) != NULL) {
+		TAILQ_REMOVE(&ec->pending_bit_clears, w, link);
+		ec_bitmap_word_clear(ec->clear_staged_map, w->stripe_index);
+		TAILQ_INSERT_TAIL(&ec->in_flight_bit_clears, w, link);
+	}
+
+	rc = ec_bitmap_persist_async(ec, ec->clear_staged_map,
+				     ec_bit_clear_on_durable, ec,
+				     ec_bit_clear_on_drained, ec);
+	if (rc != 0) {
+		SPDK_WARNLOG("EC bdev %s: bit-clear persist submit failed "
+			     "(rc=%d); draining waiters\n",
+			     ec->bdev.name, rc);
+		ec_bit_clear_on_durable(ec, rc);
+		/* Sync submit failure: cb_drained will not fire, so free the shadow map here. */
+		free(ec->clear_staged_map);
+		ec->clear_staged_map = NULL;
+	}
+}
+
+void
+ec_bit_clear_flush_if_pending(struct ec_bdev *ec)
+{
+	/*
+	 * Home-thread only: fires from the bit-clear persist's write_cb chain,
+	 * which runs on the channel-owning thread. Same invariant as
+	 * ec_bit_clear_flush.
+	 */
+	assert(spdk_get_thread() == ec->home_thread);
+
+	if (ec->bitmap_persist_in_flight) {
+		/*
+		 * Another persist already in flight (race-free because both
+		 * setter and reader run on the home thread -- this hook is
+		 * called only from a persist's own write_cb where pending
+		 * was just set to false, but a nested invocation pattern
+		 * could in theory re-set it). Bail; the next persist's
+		 * drainout will retry.
+		 */
+		return;
+	}
+	if (ec->clear_staged_map != NULL) {
+		/*
+		 * A bit-clear persist's cb_drained hasn't fired yet -- our
+		 * own staged shadow is still set. This hook ran from inside
+		 * ec_bitmap_persist_write_cb between "pending = false" and
+		 * cb_drained, which is the natural ordering. cb_drained will
+		 * free the shadow and then kick any new waiters that arrived
+		 * during this persist. Bailing here avoids tripping the
+		 * "clear_staged_map == NULL" precondition in ec_bit_clear_flush.
+		 */
+		return;
+	}
+	if (TAILQ_EMPTY(&ec->pending_bit_clears)) {
+		return;
+	}
+	ec_bit_clear_flush(ec);
+}
+
+/*
+ * Home-thread half of ec_submit_bit_clear_async. ec_submit_bit_clear_async
+ * runs on the submitter thread, allocates the waiter (so -ENOMEM stays
+ * synchronous), and then calls this -- inline if it already is the home
+ * thread, otherwise via spdk_thread_send_msg. The queue insert and the
+ * persist trigger both mutate home-thread state.
+ */
+static void
+ec_bit_clear_enqueue_on_home(void *arg)
+{
+	struct ec_pending_bit_clear *w  = arg;
+	struct ec_bdev              *ec = w->ec;
+
+	assert(spdk_get_thread() == ec->home_thread);
+
+	TAILQ_INSERT_TAIL(&ec->pending_bit_clears, w, link);
+	if (!ec->bitmap_persist_in_flight) {
+		ec_bit_clear_flush(ec);
+	}
+}
+
+int
+ec_submit_bit_clear_async(struct ec_bdev *ec, uint64_t stripe_index,
+			  void (*cb_fn)(void *cb_arg, int rc),
+			  void *cb_arg)
+{
+	struct ec_pending_bit_clear *w;
+
+	if (stripe_index >= ec->num_stripes) {
+		return -EINVAL;
+	}
+
+	w = calloc(1, sizeof(*w));
+	if (!w) {
+		return -ENOMEM;
+	}
+	w->ec           = ec;
+	w->stripe_index = stripe_index;
+	w->cb_fn        = cb_fn;
+	w->cb_arg       = cb_arg;
+
+	/*
+	 * Route the enqueue + flush trigger to the home thread.
+	 * write-into-unmapped, which drives this, completes on the bdev_io
+	 * owner thread (nvmf poll group, raid child, ...) -- which differs
+	 * from the EC creation thread under a multi-reactor SPDK target.
+	 * pending_bit_clears, bitmap_persist_in_flight, and bitmap_chans[] are
+	 * all home-thread state.
+	 *
+	 * Fast path: when the caller is already on the home thread, skip
+	 * send_msg and run inline -- no added latency.
+	 *
+	 * See "why route, not per-channel" above ec_bitmap_persist_async.
+	 */
+	if (spdk_get_thread() == ec->home_thread) {
+		ec_bit_clear_enqueue_on_home(w);
+	} else {
+		int rc = spdk_thread_send_msg(ec->home_thread,
+					      ec_bit_clear_enqueue_on_home, w);
+		if (rc != 0) {
+			free(w);
+			return rc;
+		}
+	}
+	/*
+	 * Return 0 means "enqueued; cb_fn will fire later" -- NOT that the bit
+	 * has been cleared. If a persist is in flight, the waiter sits on
+	 * pending until that persist's drainout fires
+	 * ec_bit_clear_flush_if_pending.
+	 */
+	return 0;
+}
