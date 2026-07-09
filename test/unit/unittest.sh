@@ -24,6 +24,11 @@ function unittest_bdev() {
 	$valgrind $testdir/lib/bdev/raid/concat.c/concat_ut
 	$valgrind $testdir/lib/bdev/raid/raid0.c/raid0_ut
 	$valgrind $testdir/lib/bdev/raid/raid1.c/raid1_ut
+	if [[ $CONFIG_ISAL == y ]]; then
+		$valgrind $testdir/lib/bdev/ec/bdev_ec.c/bdev_ec_ut
+		$valgrind $testdir/lib/bdev/ec/bdev_ec_wib.c/bdev_ec_wib_ut
+		$valgrind $testdir/lib/bdev/ec/bdev_ec_rmw.c/bdev_ec_rmw_ut
+	fi
 	$valgrind $testdir/lib/bdev/bdev_zone.c/bdev_zone_ut
 	$valgrind $testdir/lib/bdev/gpt/gpt.c/gpt_ut
 	$valgrind $testdir/lib/bdev/part.c/part_ut
