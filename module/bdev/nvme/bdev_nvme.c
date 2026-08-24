@@ -2517,9 +2517,7 @@ bdev_nvme_reset_create_qpairs_done(struct nvme_ctrlr *nvme_ctrlr, void *ctx, int
 		 * depopulate here would fire BDEV_EVENT_REMOVE to base-bdev
 		 * consumers like bdev_raid / bdev_ec).
 		 */
-		for (nvme_ns = nvme_ctrlr_get_first_active_ns(nvme_ctrlr);
-		     nvme_ns != NULL;
-		     nvme_ns = nvme_ctrlr_get_next_active_ns(nvme_ctrlr, nvme_ns)) {
+		RB_FOREACH(nvme_ns, nvme_ns_tree, &nvme_ctrlr->namespaces) {
 			if (nvme_ns->ns == NULL || nvme_ns->bdev == NULL) {
 				continue;
 			}

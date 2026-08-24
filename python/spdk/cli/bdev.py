@@ -972,7 +972,7 @@ def add_parser(subparsers):
     p.add_argument('--strip-size-kb', help='Strip size in KiB (power of two)', required=True, type=int)
     p.add_argument('--data-chunk-count', help='Number of data chunks (k)', required=True, type=int)
     p.add_argument('--parity-chunk-count', help='Number of parity chunks (m)', required=True, type=int)
-    p.add_argument('-b', '--base-bdevs', nargs='+', help='List of base bdev names (k + m)', required=True)
+    p.add_argument('-b', '--base-bdevs', help='List of base bdev names (k + m), whitespace separated list in quotes', required=True, type=str.split)
     p.add_argument('--uuid', help='Optional UUID string')
     p.add_argument('--salvage-requested',
                    help='Recover an existing array; fail if no valid on-disk bitmap is found instead of fresh-creating',

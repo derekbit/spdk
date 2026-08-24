@@ -51,8 +51,10 @@ free_rpc_bdev_ec_create(struct rpc_bdev_ec_create *req)
 	}
 }
 
+/* Manual decoder for the base_bdevs array, matching the schema array class
+ * 'ec_base_bdevs' (rpc_decode_<class>) expected by scripts/genrpc.py. */
 static int
-decode_base_bdevs(const struct spdk_json_val *val, void *out)
+rpc_decode_ec_base_bdevs(const struct spdk_json_val *val, void *out)
 {
 	struct rpc_bdev_ec_create *req = out;
 	return spdk_json_decode_array(val, spdk_json_decode_string, req->base_bdevs,
@@ -64,7 +66,7 @@ static const struct spdk_json_object_decoder rpc_bdev_ec_create_decoders[] = {
 	{"strip_size_kb", offsetof(struct rpc_bdev_ec_create, strip_size_kb), spdk_json_decode_uint32},
 	{"data_chunk_count", offsetof(struct rpc_bdev_ec_create, data_chunk_count), spdk_json_decode_uint32},
 	{"parity_chunk_count", offsetof(struct rpc_bdev_ec_create, parity_chunk_count), spdk_json_decode_uint32},
-	{"base_bdevs", 0, decode_base_bdevs},
+	{"base_bdevs", 0, rpc_decode_ec_base_bdevs},
 	{"uuid", offsetof(struct rpc_bdev_ec_create, uuid), spdk_json_decode_uuid, true},
 	{"salvage_requested", offsetof(struct rpc_bdev_ec_create, salvage_requested),
 		spdk_json_decode_bool, true},
@@ -236,7 +238,7 @@ free_rpc_bdev_ec_replace(struct rpc_bdev_ec_replace *req)
 	free(req);
 }
 
-static const struct spdk_json_object_decoder rpc_bdev_ec_replace_decoders[] = {
+static const struct spdk_json_object_decoder rpc_bdev_ec_replace_base_bdev_decoders[] = {
 	{"ec_name",       offsetof(struct rpc_bdev_ec_replace, ec_name),       spdk_json_decode_string},
 	{"slot",          offsetof(struct rpc_bdev_ec_replace, slot),          spdk_json_decode_uint32},
 	{"new_bdev_name", offsetof(struct rpc_bdev_ec_replace, new_bdev_name), spdk_json_decode_string},
@@ -311,8 +313,8 @@ rpc_bdev_ec_replace_base_bdev(struct spdk_jsonrpc_request *request,
 	}
 	req->request = request;
 
-	if (spdk_json_decode_object(params, rpc_bdev_ec_replace_decoders,
-				    SPDK_COUNTOF(rpc_bdev_ec_replace_decoders),
+	if (spdk_json_decode_object(params, rpc_bdev_ec_replace_base_bdev_decoders,
+				    SPDK_COUNTOF(rpc_bdev_ec_replace_base_bdev_decoders),
 				    req)) {
 		SPDK_ERRLOG("spdk_json_decode_object failed for bdev_ec_replace_base_bdev\n");
 		ec_rpc_send_decode_error(request);

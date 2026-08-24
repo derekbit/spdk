@@ -606,6 +606,11 @@
       "name": "raid_base_bdevs",
       "item_type": "string",
       "max_count": 255
+    },
+    {
+      "name": "ec_base_bdevs",
+      "item_type": "string",
+      "max_count": 32
     }
   ],
   "methods": [
@@ -5786,31 +5791,32 @@
         },
         {
           "name": "strip_size_kb",
-          "type": "number",
+          "type": "uint32",
           "required": true,
           "description": "Strip size in KiB (power of two)"
         },
         {
           "name": "data_chunk_count",
-          "type": "number",
+          "type": "uint32",
           "required": true,
           "description": "Number of data chunks (k)"
         },
         {
           "name": "parity_chunk_count",
-          "type": "number",
+          "type": "uint32",
           "required": true,
           "description": "Number of parity chunks (m)"
         },
         {
           "name": "base_bdevs",
           "type": "array",
+          "class": "ec_base_bdevs",
           "required": true,
           "description": "List of base bdev names, one per slot (k + m entries)"
         },
         {
           "name": "uuid",
-          "type": "string",
+          "type": "uuid",
           "required": false,
           "description": "UUID for this EC bdev"
         },
@@ -5844,7 +5850,7 @@
         },
         {
           "name": "slot",
-          "type": "number",
+          "type": "uint32",
           "required": true,
           "description": "Slot index of the base bdev to replace"
         },
@@ -5944,7 +5950,7 @@
         },
         {
           "name": "max_stripes_per_sec",
-          "type": "number",
+          "type": "uint32",
           "required": false,
           "description": "Rebuild rate limit in stripes per second (0 means unlimited)"
         },
