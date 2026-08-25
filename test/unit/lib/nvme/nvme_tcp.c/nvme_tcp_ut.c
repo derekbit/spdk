@@ -29,6 +29,8 @@ DEFINE_STUB(nvme_qpair_submit_request,
 
 DEFINE_STUB(spdk_nvme_poll_group_remove, int, (struct spdk_nvme_poll_group *group,
 		struct spdk_nvme_qpair *qpair), 0);
+DEFINE_STUB(spdk_nvme_poll_group_get_fd_group, struct spdk_fd_group *,
+	    (struct spdk_nvme_poll_group *group), NULL);
 DEFINE_STUB(spdk_sock_get_optimal_sock_group,
 	    int,
 	    (struct spdk_sock *sock, struct spdk_sock_group **group, struct spdk_sock_group *hint),
@@ -38,6 +40,7 @@ DEFINE_STUB(spdk_sock_group_get_ctx,
 	    void *,
 	    (struct spdk_sock_group *group),
 	    NULL);
+DEFINE_STUB(spdk_sock_group_get_interruptfd, int, (struct spdk_sock_group *group), -1);
 DEFINE_STUB(spdk_sock_get_numa_id, int32_t, (struct spdk_sock *sock), SPDK_ENV_NUMA_ID_ANY);
 DEFINE_STUB(spdk_get_sock_fd, int, (struct spdk_sock *sock), 0);
 

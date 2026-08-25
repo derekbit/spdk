@@ -79,6 +79,11 @@ struct nvme_tcp_poll_group {
 	uint32_t completions_per_qpair;
 	int64_t num_completions;
 
+	/* Full interrupt mode: the sock group's interrupt fd registered in the poll
+	 * group's fd_group so socket readability (RX) wakes the reactor. -1 when not
+	 * registered. */
+	int interrupt_sock_fd;
+
 	TAILQ_HEAD(, nvme_tcp_qpair) needs_poll;
 	TAILQ_HEAD(, nvme_tcp_qpair) timeout_enabled;
 	struct spdk_nvme_tcp_stat stats;
@@ -128,6 +133,12 @@ struct nvme_tcp_qpair {
 	uint64_t				icreq_timeout_tsc;
 
 	bool					shared_stats;
+
+	/* Full interrupt mode: eventfd registered in the poll group's fd_group.
+	 * Signaled when a request is submitted so the reactor wakes up and flushes
+	 * queued TX PDUs to the socket without relying on periodic polling. -1 when
+	 * not in interrupt mode or not part of a poll group. */
+	int					interrupt_efd;
 };
 
 enum nvme_tcp_req_state {
@@ -434,6 +445,9 @@ nvme_tcp_qpair_try_disconnect_done(struct spdk_nvme_qpair *qpair)
 }
 
 static void
+nvme_tcp_qpair_remove_interrupt(struct nvme_tcp_qpair *tqpair);
+
+static void
 nvme_tcp_ctrlr_disconnect_qpair(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_qpair *qpair)
 {
 	struct nvme_tcp_qpair *tqpair = nvme_tcp_qpair(qpair);
@@ -443,6 +457,8 @@ nvme_tcp_ctrlr_disconnect_qpair(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_
 
 	if (qpair->poll_group) {
 		group = nvme_tcp_poll_group(qpair->poll_group);
+
+		nvme_tcp_qpair_remove_interrupt(tqpair);
 
 		if (TAILQ_ENTRY_ENQUEUED(tqpair, link_poll)) {
 			TAILQ_REMOVE_CLEAR(&group->needs_poll, tqpair, link_poll);
@@ -1200,6 +1216,19 @@ nvme_tcp_qpair_submit_request(struct spdk_nvme_qpair *qpair,
 	}
 
 	nvme_tcp_qpair_capsule_cmd_send(tqpair, tcp_req);
+
+	/* Full interrupt mode: epoll notifies us when the socket is readable/writable, but not
+	 * when new data is queued for TX. Signal the qpair eventfd so the reactor wakes up and
+	 * flushes the queued PDU to the socket. Multiple submits within one reactor iteration are
+	 * coalesced by the eventfd counter into a single flush. */
+	if (tqpair->interrupt_efd >= 0) {
+		uint64_t notify = 1;
+
+		if (write(tqpair->interrupt_efd, &notify, sizeof(notify)) != sizeof(notify)) {
+			NVME_TQPAIR_ERRLOG(tqpair, "failed to signal tx eventfd: %s\n", spdk_strerror(errno));
+		}
+	}
+
 	return 0;
 }
 
@@ -2622,6 +2651,136 @@ nvme_tcp_ctrlr_connect_qpair_poll(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvm
 	return rc;
 }
 
+/* Full interrupt mode wake handler. Registered in the poll group's fd_group for
+ * both the per-qpair TX eventfd (signaled on submit) and the sock group's RX
+ * interrupt fd (ready on socket activity). It runs the poll group's full
+ * completion processing (flush every socket, reap completions and drain the
+ * needs_poll list) - the same work the periodic poller used to do, but triggered
+ * on demand. A bare per-socket flush is not enough: queued sends parked on
+ * needs_poll (e.g. send-side flow control) would otherwise never make forward
+ * progress without a periodic poll. */
+static int
+nvme_tcp_poll_group_interrupt_cb(void *arg)
+{
+	struct spdk_nvme_poll_group *pgroup = arg;
+
+	if (spdk_likely(pgroup->interrupt.cb_fn != NULL)) {
+		pgroup->interrupt.cb_fn(pgroup, pgroup->interrupt.cb_ctx);
+	}
+
+	return 0;
+}
+
+/* Register the sock group's interrupt fd in the poll group's fd_group (once per
+ * poll group) so incoming data (RX) wakes the reactor. Without this, nothing
+ * would drive RX completions once the periodic poller is disabled. */
+static int
+nvme_tcp_poll_group_add_sock_interrupt(struct nvme_tcp_qpair *tqpair, struct spdk_fd_group *fgrp)
+{
+	struct nvme_tcp_poll_group *pgroup = nvme_tcp_poll_group(tqpair->qpair.poll_group);
+	struct spdk_event_handler_opts opts = {};
+	int fd, rc;
+
+	if (pgroup->interrupt_sock_fd >= 0) {
+		return 0;
+	}
+
+	fd = spdk_sock_group_get_interruptfd(pgroup->sock_group);
+	if (fd < 0) {
+		NVME_TQPAIR_ERRLOG(tqpair, "failed to get sock group interrupt fd: %d\n", fd);
+		return fd;
+	}
+
+	spdk_fd_group_get_default_event_handler_opts(&opts, sizeof(opts));
+
+	rc = SPDK_FD_GROUP_ADD_EXT(fgrp, fd, nvme_tcp_poll_group_interrupt_cb,
+				   tqpair->qpair.poll_group->group, &opts);
+	if (rc != 0) {
+		NVME_TQPAIR_ERRLOG(tqpair, "failed to add sock group interrupt fd, rc %d: %s\n", rc,
+				   spdk_strerror(-rc));
+		return rc;
+	}
+
+	pgroup->interrupt_sock_fd = fd;
+
+	return 0;
+}
+
+/* Create an eventfd for the qpair and register it in the poll group's fd_group
+ * so the reactor can be woken to flush TX PDUs in full interrupt mode. */
+static int
+nvme_tcp_qpair_add_interrupt(struct nvme_tcp_qpair *tqpair)
+{
+	struct spdk_nvme_qpair *qpair = &tqpair->qpair;
+	struct spdk_event_handler_opts opts = {};
+	struct spdk_fd_group *fgrp;
+	int fd, rc;
+
+	if (!qpair->ctrlr->opts.enable_interrupts || qpair->poll_group == NULL) {
+		return 0;
+	}
+
+	/* Already registered (e.g. adminq reconnect reuses the qpair). */
+	if (tqpair->interrupt_efd >= 0) {
+		return 0;
+	}
+
+	fgrp = spdk_nvme_poll_group_get_fd_group(qpair->poll_group->group);
+	if (fgrp == NULL) {
+		return 0;
+	}
+
+	/* Ensure RX (socket readability) wakes the reactor for this poll group. */
+	rc = nvme_tcp_poll_group_add_sock_interrupt(tqpair, fgrp);
+	if (rc != 0) {
+		return rc;
+	}
+
+	fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+	if (fd < 0) {
+		NVME_TQPAIR_ERRLOG(tqpair, "eventfd() failed: %s\n", spdk_strerror(errno));
+		return -errno;
+	}
+
+	spdk_fd_group_get_default_event_handler_opts(&opts, sizeof(opts));
+	opts.fd_type = SPDK_FD_TYPE_EVENTFD;
+
+	rc = SPDK_FD_GROUP_ADD_EXT(fgrp, fd, nvme_tcp_poll_group_interrupt_cb,
+				   qpair->poll_group->group, &opts);
+	if (rc != 0) {
+		NVME_TQPAIR_ERRLOG(tqpair, "failed to add tx eventfd to fd group, rc %d: %s\n", rc,
+				   spdk_strerror(-rc));
+		close(fd);
+		return rc;
+	}
+
+	tqpair->interrupt_efd = fd;
+
+	return 0;
+}
+
+/* Remove and close the qpair eventfd registered by nvme_tcp_qpair_add_interrupt(). */
+static void
+nvme_tcp_qpair_remove_interrupt(struct nvme_tcp_qpair *tqpair)
+{
+	struct spdk_nvme_qpair *qpair = &tqpair->qpair;
+	struct spdk_fd_group *fgrp;
+
+	if (tqpair->interrupt_efd < 0) {
+		return;
+	}
+
+	if (qpair->poll_group != NULL) {
+		fgrp = spdk_nvme_poll_group_get_fd_group(qpair->poll_group->group);
+		if (fgrp != NULL) {
+			spdk_fd_group_remove(fgrp, tqpair->interrupt_efd);
+		}
+	}
+
+	close(tqpair->interrupt_efd);
+	tqpair->interrupt_efd = -1;
+}
+
 static int
 nvme_tcp_ctrlr_connect_qpair(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_qpair *qpair)
 {
@@ -2656,6 +2815,13 @@ nvme_tcp_ctrlr_connect_qpair(struct spdk_nvme_ctrlr *ctrlr, struct spdk_nvme_qpa
 		rc = spdk_sock_group_add_sock(tgroup->sock_group, tqpair->sock, nvme_tcp_qpair_sock_cb, qpair);
 		if (rc < 0) {
 			NVME_TQPAIR_ERRLOG(tqpair, "spdk_sock_group_add_sock() failed, rc %d: %s\n", rc,
+					   spdk_strerror(-rc));
+			return rc;
+		}
+
+		rc = nvme_tcp_qpair_add_interrupt(tqpair);
+		if (rc < 0) {
+			NVME_TQPAIR_ERRLOG(tqpair, "nvme_tcp_qpair_add_interrupt() failed, rc %d: %s\n", rc,
 					   spdk_strerror(-rc));
 			return rc;
 		}
@@ -2709,6 +2875,7 @@ nvme_tcp_ctrlr_create_qpair(struct spdk_nvme_ctrlr *ctrlr,
 	 * one slot shall always remain empty.
 	 */
 	tqpair->num_entries = qsize - 1;
+	tqpair->interrupt_efd = -1;
 	qpair = &tqpair->qpair;
 	rc = nvme_qpair_init(qpair, qid, ctrlr, qprio, num_requests, async);
 	if (rc != 0) {
@@ -2971,6 +3138,8 @@ nvme_tcp_poll_group_create(void)
 	TAILQ_INIT(&group->needs_poll);
 	TAILQ_INIT(&group->timeout_enabled);
 
+	group->interrupt_sock_fd = -1;
+
 	group->sock_group = spdk_sock_group_create(group);
 	if (group->sock_group == NULL) {
 		free(group);
@@ -3051,6 +3220,15 @@ nvme_tcp_poll_group_destroy(struct spdk_nvme_transport_poll_group *tgroup)
 
 	if (!STAILQ_EMPTY(&tgroup->connected_qpairs) || !STAILQ_EMPTY(&tgroup->disconnected_qpairs)) {
 		return -EBUSY;
+	}
+
+	if (group->interrupt_sock_fd >= 0) {
+		struct spdk_fd_group *fgrp = spdk_nvme_poll_group_get_fd_group(tgroup->group);
+
+		if (fgrp != NULL) {
+			spdk_fd_group_remove(fgrp, group->interrupt_sock_fd);
+		}
+		group->interrupt_sock_fd = -1;
 	}
 
 	rc = spdk_sock_group_close(&group->sock_group);
