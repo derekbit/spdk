@@ -44,7 +44,7 @@ endif
 DEPDIRS-thread := log util trace
 DEPDIRS-keyring := log util $(JSON_LIBS)
 
-DEPDIRS-nvme := log keyring sock util trace dma
+DEPDIRS-nvme := log keyring sock util trace dma thread
 ifeq ($(CONFIG_VFIO_USER),y)
 DEPDIRS-nvme += vfio_user
 endif
