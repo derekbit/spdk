@@ -175,7 +175,6 @@
 
 /* The NVMe Write Zeroes command NLB field is 16-bit (0..65535 => max 65536 blocks). */
 #define BDEV_NVME_WRITE_ZEROES_MAX_BLOCKS (UINT16_MAX + 1)
-#define NVME_IOQ_INTERRUPT_POLL_PERIOD_US	(100)
 
 #define NSID_STR_LEN 10
 
@@ -3981,15 +3980,13 @@ bdev_nvme_create_poll_group_cb(void *io_device, void *ctx_buf)
 		return -1;
 	}
 
-	/* For interrupt mode, the IO queue must be polled periodically
-	 * to flush data. Since TCP transport does not automatically push data to
-	 * the OS stack, we poll periodically to ensure timely processing of IO
-	 * commands for any TCP controllers that might be added.
-	 *
-	 * Unit is in milliseconds.
-	 * https://github.com/spdk/spdk/blob/3cb3145bfa22a650a01c1183332a9f8c5bd2f868/doc/jsonrpc.md?plain=1#L3995
+	/* Full interrupt mode: run the IO queue purely event-driven with no periodic
+	 * polling. The TCP transport wakes the reactor via a per-qpair eventfd when TX
+	 * data is queued (see nvme_tcp_qpair_add_interrupt()), and socket readability
+	 * drives RX, so a zero period lets the fd-interrupt path below take over and the
+	 * reactor consumes no CPU while idle.
 	 */
-	period = spdk_interrupt_mode_is_enabled() ? NVME_IOQ_INTERRUPT_POLL_PERIOD_US : g_opts.nvme_ioq_poll_period_us;
+	period = spdk_interrupt_mode_is_enabled() ? 0 : g_opts.nvme_ioq_poll_period_us;
 
 	group->poller = SPDK_POLLER_REGISTER(bdev_nvme_poll, group, period);
 
@@ -3998,9 +3995,9 @@ bdev_nvme_create_poll_group_cb(void *io_device, void *ctx_buf)
 		return -1;
 	}
 
-	/* In mixed transport scenarios or when TCP is expected, use only periodic polling
-	 * to ensure TCP qpairs work correctly. TCP qpairs use socket groups which are
-	 * incompatible with interrupt mode polling.
+	/* With a zero poll period in interrupt mode, drive the poll group purely from its
+	 * fd_group: register it as a reactor interrupt source so qpair socket fds (RX) and
+	 * the per-qpair TX eventfds wake the reactor on demand.
 	 */
 	if (spdk_interrupt_mode_is_enabled() && period == 0) {
 		spdk_poller_register_interrupt(group->poller, NULL, NULL);
