@@ -20,6 +20,7 @@
 #include "spdk/util.h"
 #include "spdk/nvmf.h"
 #include "spdk/dma.h"
+#include "spdk/thread.h"
 
 #include "spdk_internal/nvme_tcp.h"
 #include "spdk_internal/trace_defs.h"
@@ -613,6 +614,32 @@ pdu_seq_fail(struct nvme_tcp_pdu *pdu, int status)
 	nvme_tcp_req_complete(treq, treq->tqpair, &treq->rsp, true);
 }
 
+/* Full interrupt mode: epoll notifies the reactor when a socket becomes readable or
+ * writable, but not when the application queues new data into SPDK's internal TX queue.
+ * Signal the qpair eventfd so the reactor wakes up and flushes the queued PDU to the
+ * socket. Multiple writes within one reactor iteration are coalesced by the eventfd
+ * counter into a single flush, preserving batching. */
+static void
+nvme_tcp_qpair_signal_tx(struct nvme_tcp_qpair *tqpair)
+{
+	uint64_t notify = 1;
+
+	/* Checked before the fd: a qpair that never went through
+	 * nvme_tcp_ctrlr_create_qpair() - unit tests build them on the stack - has a
+	 * zeroed interrupt_efd, which is a valid fd number. */
+	if (!spdk_interrupt_mode_is_enabled()) {
+		return;
+	}
+
+	if (tqpair->interrupt_efd < 0) {
+		return;
+	}
+
+	if (write(tqpair->interrupt_efd, &notify, sizeof(notify)) != sizeof(notify)) {
+		NVME_TQPAIR_ERRLOG(tqpair, "failed to signal tx eventfd: %s\n", spdk_strerror(errno));
+	}
+}
+
 static void
 _tcp_write_pdu(struct nvme_tcp_pdu *pdu)
 {
@@ -633,6 +660,8 @@ _tcp_write_pdu(struct nvme_tcp_pdu *pdu)
 	pdu->sock_req.cb_arg = pdu;
 	tqpair->stats->submitted_requests++;
 	spdk_sock_writev_async(tqpair->sock, &pdu->sock_req);
+
+	nvme_tcp_qpair_signal_tx(tqpair);
 }
 
 static void
@@ -1216,18 +1245,6 @@ nvme_tcp_qpair_submit_request(struct spdk_nvme_qpair *qpair,
 	}
 
 	nvme_tcp_qpair_capsule_cmd_send(tqpair, tcp_req);
-
-	/* Full interrupt mode: epoll notifies us when the socket is readable/writable, but not
-	 * when new data is queued for TX. Signal the qpair eventfd so the reactor wakes up and
-	 * flushes the queued PDU to the socket. Multiple submits within one reactor iteration are
-	 * coalesced by the eventfd counter into a single flush. */
-	if (tqpair->interrupt_efd >= 0) {
-		uint64_t notify = 1;
-
-		if (write(tqpair->interrupt_efd, &notify, sizeof(notify)) != sizeof(notify)) {
-			NVME_TQPAIR_ERRLOG(tqpair, "failed to signal tx eventfd: %s\n", spdk_strerror(errno));
-		}
-	}
 
 	return 0;
 }

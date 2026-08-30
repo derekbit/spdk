@@ -6,6 +6,7 @@
 
 #include "spdk/stdinc.h"
 #include "spdk/nvme.h"
+#include "spdk/thread.h"
 
 #include "spdk_internal/cunit.h"
 
@@ -2031,6 +2032,98 @@ test_nvme_tcp_qpair_submit_request(void)
 	free(tctrlr);
 }
 
+/* In full interrupt mode the reactor sleeps until an fd wakes it, and queued TX is
+ * only pushed to the wire at the top of the next poll pass. Every PDU write must
+ * therefore signal the qpair's TX eventfd, not just the command capsule: the H2C
+ * data PDU is queued from inside spdk_sock_group_poll() while the R2T that asked
+ * for it is handled, so if it does not wake the reactor itself, nothing schedules
+ * the pass that would flush it.
+ *
+ * Registered last in the suite on purpose: spdk_interrupt_mode_enable() is
+ * process-wide and has no counterpart to turn it back off.
+ */
+static void
+test_nvme_tcp_interrupt_mode_tx_wakeup(void)
+{
+	struct nvme_tcp_ctrlr *tctrlr = NULL;
+	struct nvme_tcp_qpair *tqpair = NULL;
+	struct spdk_nvme_ctrlr *ctrlr = NULL;
+	struct nvme_tcp_req *tcp_req = NULL;
+	struct nvme_request req = {};
+	struct nvme_tcp_ut_bdev_io bio = {};
+	struct spdk_nvme_tcp_stat stat = {};
+	struct spdk_nvme_transport_id trid = {
+		.trtype = SPDK_NVME_TRANSPORT_TCP,
+		.priority = 1,
+		.adrfam = SPDK_NVMF_ADRFAM_IPV4,
+		.traddr = "192.168.1.78",
+		.trsvcid = "23",
+	};
+	struct spdk_nvme_ctrlr_opts opts = {
+		.admin_queue_size = 2,
+		.src_addr = "192.168.1.77",
+		.src_svcid = "23",
+	};
+	uint64_t event;
+	int efd, rc;
+
+	rc = spdk_interrupt_mode_enable();
+	SPDK_CU_ASSERT_FATAL(rc == 0);
+
+	MOCK_SET(spdk_sock_connect_async, (struct spdk_sock *)0xDCADBEEF);
+
+	ctrlr = nvme_tcp_ctrlr_construct(&trid, &opts, NULL);
+	SPDK_CU_ASSERT_FATAL(ctrlr != NULL);
+	tctrlr = nvme_tcp_ctrlr(ctrlr);
+	tqpair = nvme_tcp_qpair(tctrlr->ctrlr.adminq);
+	tqpair->stats = &stat;
+
+	/* Stand in for the eventfd nvme_tcp_qpair_add_interrupt() installs when the
+	 * qpair joins a poll group with interrupts enabled. */
+	efd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+	SPDK_CU_ASSERT_FATAL(efd >= 0);
+	tqpair->interrupt_efd = efd;
+
+	req.qpair = &tqpair->qpair;
+	req.cmd.opc = SPDK_NVME_DATA_HOST_TO_CONTROLLER;
+	req.payload = NVME_PAYLOAD_SGL(nvme_tcp_ut_reset_sgl, nvme_tcp_ut_next_sge, &bio, NULL);
+	req.payload_type = NVME_PAYLOAD_TYPE_SGL;
+	req.qpair->ctrlr->max_sges = 2;
+	req.payload.size = 2048;
+	req.payload.offset = 0;
+	bio.iovpos = 0;
+	bio.iovs[0].iov_len = 1024;
+	bio.iovs[1].iov_len = 1024;
+	bio.iovs[0].iov_base = (void *)0xDEADBEEF;
+	bio.iovs[1].iov_base = (void *)0xDFADBEEF;
+
+	/* The command capsule wakes the reactor. */
+	rc = nvme_tcp_qpair_submit_request(tctrlr->ctrlr.adminq, &req);
+	CU_ASSERT(rc == 0);
+	CU_ASSERT(read(efd, &event, sizeof(event)) == (ssize_t)sizeof(event));
+
+	/* So must the H2C data PDU sent in response to an R2T. Without this the PDU
+	 * sits in the socket TX queue with no wakeup pending, and the write stalls
+	 * until the controller keep-alive resets the connection. */
+	tcp_req = TAILQ_FIRST(&tqpair->outstanding_reqs);
+	SPDK_CU_ASSERT_FATAL(tcp_req != NULL);
+	tqpair->maxh2cdata = 1024;
+	tcp_req->r2tl_remain = 1024;
+	tcp_req->datao = 0;
+
+	nvme_tcp_send_h2c_data(tcp_req);
+	CU_ASSERT(read(efd, &event, sizeof(event)) == (ssize_t)sizeof(event));
+
+	close(efd);
+	tqpair->interrupt_efd = -1;
+
+	MOCK_CLEAR(spdk_sock_connect_async);
+	free(tqpair->tcp_reqs);
+	spdk_free(tqpair->send_pdus);
+	free(tqpair);
+	free(tctrlr);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -2067,6 +2160,7 @@ main(int argc, char **argv)
 	CU_ADD_TEST(suite, test_nvme_tcp_poll_group_get_stats);
 	CU_ADD_TEST(suite, test_nvme_tcp_ctrlr_construct);
 	CU_ADD_TEST(suite, test_nvme_tcp_qpair_submit_request);
+	CU_ADD_TEST(suite, test_nvme_tcp_interrupt_mode_tx_wakeup);
 
 	num_failures = spdk_ut_run_tests(argc, argv, NULL);
 	CU_cleanup_registry();
