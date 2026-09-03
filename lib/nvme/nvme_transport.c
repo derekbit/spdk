@@ -508,8 +508,14 @@ struct connect_ctx {
 static void
 nvme_connect_complete(struct connect_ctx *ctx, int status)
 {
+    struct spdk_nvme_qpair *qpair = ctx->qpair;
+
+    /* Clear before invoking cb_fn so a reentrant disconnect of this same qpair
+     * (e.g. triggered by the callback) does not complete/free ctx twice. */
+    qpair->async_connect_ctx = NULL;
+
     if (ctx->cb_fn) {
-        ctx->cb_fn(ctx->qpair, status, ctx->cb_arg);
+        ctx->cb_fn(qpair, status, ctx->cb_arg);
     }
 
     spdk_poller_unregister(&ctx->poller);
@@ -569,6 +575,8 @@ start_async_qpair_connect(struct spdk_nvme_qpair *qpair,
         free(ctx);
         return -ENOMEM;
     }
+
+    qpair->async_connect_ctx = ctx;
 
     return 0;
 }
@@ -662,6 +670,14 @@ nvme_transport_ctrlr_disconnect_qpair(struct spdk_nvme_ctrlr *ctrlr, struct spdk
 	if (nvme_qpair_get_state(qpair) == NVME_QPAIR_DISCONNECTING ||
 	    nvme_qpair_get_state(qpair) == NVME_QPAIR_DISCONNECTED) {
 		return;
+	}
+
+	if (qpair->async_connect_ctx != NULL) {
+		/* An async TCP connect is still in flight for this qpair. Cancel its poller
+		 * now so it cannot fire again later and touch this qpair after it is torn
+		 * down/freed.
+		 */
+		nvme_connect_complete(qpair->async_connect_ctx, -ECANCELED);
 	}
 
 	nvme_qpair_set_state(qpair, NVME_QPAIR_DISCONNECTING);

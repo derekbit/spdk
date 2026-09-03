@@ -548,6 +548,12 @@ struct spdk_nvme_qpair {
 
 	void					*req_buf;
 
+	/* Non-NULL while an asynchronous TCP fabrics connect (see start_async_qpair_connect())
+	 * is in flight. Used to cancel the poller if the qpair is disconnected/destroyed before
+	 * the connect completes, so it does not touch a freed qpair.
+	 */
+	void					*async_connect_ctx;
+
 	/* In-band authentication state */
 	struct nvme_auth			auth;
 };
