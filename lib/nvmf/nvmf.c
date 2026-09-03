@@ -7,6 +7,8 @@
 
 #include "spdk/stdinc.h"
 
+#include <execinfo.h>
+
 #include "spdk/bdev.h"
 #include "spdk/bit_array.h"
 #include "spdk/thread.h"
@@ -14,12 +16,40 @@
 #include "spdk/endian.h"
 #include "spdk/string.h"
 #include "spdk/log.h"
+#include "spdk/util.h"
 #include "spdk_internal/usdt.h"
 
 #include "nvmf_internal.h"
 #include "transport.h"
 
 SPDK_LOG_REGISTER_COMPONENT(nvmf)
+
+void
+nvmf_lh_dump_backtrace(const char *tag)
+{
+	void *frames[24];
+	char **symbols;
+	int count, i;
+	static int enabled = -1;
+
+	if (spdk_unlikely(enabled < 0)) {
+		enabled = getenv("SPDK_LH_NVMF_BT") != NULL ? 1 : 0;
+	}
+	if (enabled == 0) {
+		return;
+	}
+
+	count = backtrace(frames, SPDK_COUNTOF(frames));
+	symbols = backtrace_symbols(frames, count);
+	if (symbols == NULL) {
+		SPDK_NOTICELOG("LH-BT %s: backtrace_symbols() failed for %d frames\n", tag, count);
+		return;
+	}
+	for (i = 0; i < count; i++) {
+		SPDK_NOTICELOG("LH-BT %s: #%d %s\n", tag, i, symbols[i]);
+	}
+	free(symbols);
+}
 
 #define SPDK_NVMF_DEFAULT_MAX_SUBSYSTEMS 1024
 
@@ -1641,10 +1671,22 @@ spdk_nvmf_qpair_disconnect(struct spdk_nvmf_qpair *qpair)
 {
 	struct spdk_nvmf_poll_group *group = qpair->group;
 	struct nvmf_qpair_disconnect_ctx *qpair_ctx;
+	struct spdk_nvme_transport_id lh_trid = {};
 
 	if (__atomic_test_and_set(&qpair->disconnect_started, __ATOMIC_RELAXED)) {
 		return -EINPROGRESS;
 	}
+
+	if (spdk_nvmf_qpair_get_listen_trid(qpair, &lh_trid) != 0) {
+		lh_trid.traddr[0] = '\0';
+		lh_trid.trsvcid[0] = '\0';
+	}
+	SPDK_NOTICELOG("LH-NVMF qpair_disconnect qpair=%p qid=%u state=%d ctrlr=%p subsystem=%s listen=%s:%s\n",
+		       qpair, qpair->qid, qpair->state, qpair->ctrlr,
+		       qpair->ctrlr != NULL && qpair->ctrlr->subsys != NULL ?
+		       qpair->ctrlr->subsys->subnqn : "<none>",
+		       lh_trid.traddr, lh_trid.trsvcid);
+	nvmf_lh_dump_backtrace("qpair_disconnect");
 
 	/* If we get a qpair in the uninitialized state, we can just destroy it immediately */
 	if (qpair->state == SPDK_NVMF_QPAIR_UNINITIALIZED) {

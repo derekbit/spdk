@@ -1095,6 +1095,8 @@ nvmf_tcp_listen(struct spdk_nvmf_transport *transport, const struct spdk_nvme_tr
 
 	SPDK_NOTICELOG("*** NVMe/TCP Target Listening on %s port %s ***\n",
 		       trid->traddr, trid->trsvcid);
+	SPDK_NOTICELOG("LH-NVMF tcp_listen %s:%s port=%p sock=%p\n",
+		       trid->traddr, trid->trsvcid, port, port->listen_sock);
 
 	TAILQ_INSERT_TAIL(&ttransport->ports, port, link);
 	return 0;
@@ -1115,6 +1117,10 @@ nvmf_tcp_stop_listen(struct spdk_nvmf_transport *transport,
 
 	port = nvmf_tcp_find_port(ttransport, trid);
 	if (port) {
+		SPDK_NOTICELOG("LH-NVMF tcp_stop_listen %s:%s port=%p sock=%p CLOSING\n",
+			       trid->traddr, trid->trsvcid, port, port->listen_sock);
+		nvmf_lh_dump_backtrace("tcp_stop_listen");
+
 		rc = spdk_sock_group_remove_sock(ttransport->listen_sock_group, port->listen_sock);
 		if (rc < 0) {
 			SPDK_ERRLOG("spdk_sock_group_remove_sock() failed, rc %d: %s\n", rc, spdk_strerror(-rc));
@@ -1123,6 +1129,9 @@ nvmf_tcp_stop_listen(struct spdk_nvmf_transport *transport,
 		TAILQ_REMOVE(&ttransport->ports, port, link);
 		spdk_sock_close(&port->listen_sock);
 		free(port);
+	} else {
+		SPDK_NOTICELOG("LH-NVMF tcp_stop_listen %s:%s NO PORT FOUND\n",
+			       trid->traddr, trid->trsvcid);
 	}
 }
 

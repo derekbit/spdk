@@ -738,4 +738,11 @@ uint16_t nvmf_subsystem_gen_cntlid(struct spdk_nvmf_subsystem *subsystem);
 int nvmf_subsystem_copy_sn(char *dst, const char *sn, size_t size);
 int nvmf_subsystem_copy_mn(char *dst, const char *mn, size_t size);
 
+/*
+ * Longhorn debug instrumentation for the NVMf listener/subsystem teardown race.
+ * Dumps the current call stack at NOTICE level, gated by the SPDK_LH_NVMF_BT env var
+ * so that the extra latency does not perturb the race being investigated.
+ */
+void nvmf_lh_dump_backtrace(const char *tag);
+
 #endif /* __NVMF_INTERNAL_H__ */

@@ -482,6 +482,12 @@ _nvmf_subsystem_remove_listener(struct spdk_nvmf_subsystem *subsystem,
 	struct spdk_nvmf_transport *transport;
 	struct spdk_nvmf_ctrlr *ctrlr;
 
+	SPDK_NOTICELOG("LH-NVMF subsys_remove_listener subsystem=%p(%s) listener=%p %s:%s stop=%d\n",
+		       subsystem, subsystem->subnqn, listener,
+		       listener->trid ? listener->trid->traddr : "<null>",
+		       listener->trid ? listener->trid->trsvcid : "<null>", stop);
+	nvmf_lh_dump_backtrace("subsys_remove_listener");
+
 	if (stop) {
 		assert(nvmf_subsystem_listener_is_active(listener));
 
@@ -526,6 +532,8 @@ _nvmf_subsystem_destroy(struct spdk_nvmf_subsystem *subsystem)
 
 	if (!TAILQ_EMPTY(&subsystem->ctrlrs)) {
 		SPDK_DEBUGLOG(nvmf, "subsystem %p %s has active controllers\n", subsystem, subsystem->subnqn);
+		SPDK_NOTICELOG("LH-NVMF subsystem_destroy DEFERRED subsystem=%p(%s) has active controllers\n",
+			       subsystem, subsystem->subnqn);
 		subsystem->async_destroy = true;
 		spdk_thread_send_msg(subsystem->thread, _nvmf_subsystem_destroy_msg, subsystem);
 		return -EINPROGRESS;
@@ -615,6 +623,8 @@ spdk_nvmf_subsystem_destroy(struct spdk_nvmf_subsystem *subsystem, nvmf_subsyste
 	subsystem->destroy_state = NVMF_SUBSYSTEM_DESTROY_IN_PROGRESS;
 
 	SPDK_DEBUGLOG(nvmf, "subsystem is %p %s\n", subsystem, subsystem->subnqn);
+	SPDK_NOTICELOG("LH-NVMF subsystem_destroy subsystem=%p(%s)\n", subsystem, subsystem->subnqn);
+	nvmf_lh_dump_backtrace("subsystem_destroy");
 
 	nvmf_subsystem_remove_all_listeners(subsystem, false);
 
@@ -2272,6 +2282,11 @@ nvmf_ns_hot_remove(void *remove_ctx)
 	struct subsystem_ns_change_ctx *ns_ctx;
 	int rc;
 
+	SPDK_NOTICELOG("LH-NVMF ns_hot_remove subsystem=%p(%s) nsid=%u bdev=%s\n",
+		       ns->subsystem, ns->subsystem->subnqn, ns->opts.nsid,
+		       ns->bdev ? spdk_bdev_get_name(ns->bdev) : "<null>");
+	nvmf_lh_dump_backtrace("ns_hot_remove");
+
 	/* We have to allocate a new context because this op
 	 * is asynchronous and we could lose the ns in the middle.
 	 */
@@ -2358,6 +2373,10 @@ nvmf_ns_event(enum spdk_bdev_event_type type,
 
 	switch (type) {
 	case SPDK_BDEV_EVENT_REMOVE:
+		SPDK_NOTICELOG("LH-NVMF bdev_event REMOVE bdev=%s subsystem=%s nsid=%u\n",
+			       spdk_bdev_get_name(bdev),
+			       ((struct spdk_nvmf_ns *)event_ctx)->subsystem->subnqn,
+			       ((struct spdk_nvmf_ns *)event_ctx)->nsid);
 		nvmf_ns_hot_remove(event_ctx);
 		break;
 	case SPDK_BDEV_EVENT_RESIZE:

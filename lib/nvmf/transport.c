@@ -434,6 +434,8 @@ spdk_nvmf_transport_listen(struct spdk_nvmf_transport *transport,
 			TAILQ_REMOVE(&transport->listeners, listener, link);
 			free(listener);
 		}
+		SPDK_NOTICELOG("LH-NVMF listen CREATE %s:%s listener=%p ref=1 rc=%d\n",
+			       trid->traddr, trid->trsvcid, listener, rc);
 		return rc;
 	}
 
@@ -444,6 +446,9 @@ spdk_nvmf_transport_listen(struct spdk_nvmf_transport *transport,
 	}
 
 	++listener->ref;
+
+	SPDK_NOTICELOG("LH-NVMF listen REUSE %s:%s listener=%p ref=%u\n",
+		       trid->traddr, trid->trsvcid, listener, listener->ref);
 
 	return 0;
 }
@@ -458,10 +463,17 @@ spdk_nvmf_transport_stop_listen(struct spdk_nvmf_transport *transport,
 
 	listener = nvmf_transport_find_listener(transport, trid);
 	if (!listener) {
+		SPDK_NOTICELOG("LH-NVMF stop_listen %s:%s NOT FOUND\n", trid->traddr, trid->trsvcid);
 		return -ENOENT;
 	}
 
+	SPDK_NOTICELOG("LH-NVMF stop_listen %s:%s listener=%p ref=%u->%u\n",
+		       trid->traddr, trid->trsvcid, listener, listener->ref, listener->ref - 1);
+	nvmf_lh_dump_backtrace("stop_listen");
+
 	if (--listener->ref == 0) {
+		SPDK_NOTICELOG("LH-NVMF stop_listen %s:%s listener=%p CLOSING transport listener\n",
+			       trid->traddr, trid->trsvcid, listener);
 		TAILQ_REMOVE(&transport->listeners, listener, link);
 		pthread_mutex_lock(&transport->mutex);
 		transport->ops->stop_listen(transport, trid);
@@ -501,6 +513,9 @@ nvmf_stop_listen_fini(struct spdk_io_channel_iter *i, int status)
 	transport = ctx->transport;
 	assert(transport != NULL);
 
+	SPDK_NOTICELOG("LH-NVMF stop_listen_fini %s:%s subsystem=%p status=%d\n",
+		       ctx->trid.traddr, ctx->trid.trsvcid, ctx->subsystem, status);
+
 	rc = spdk_nvmf_transport_stop_listen(transport, &ctx->trid);
 	if (rc) {
 		SPDK_ERRLOG("Failed to stop listening on address '%s'\n", ctx->trid.traddr);
@@ -536,6 +551,9 @@ nvmf_stop_listen_disconnect_qpairs(struct spdk_io_channel_iter *i)
 		if (!spdk_nvme_transport_id_compare(&ctx->trid, &tmp_trid)) {
 			if (ctx->subsystem == NULL ||
 			    (qpair->ctrlr != NULL && ctx->subsystem == qpair->ctrlr->subsys)) {
+				SPDK_NOTICELOG("LH-NVMF stop_listen_disconnect %s:%s qpair=%p qid=%u ctrlr=%p subsystem=%p\n",
+					       ctx->trid.traddr, ctx->trid.trsvcid, qpair, qpair->qid,
+					       qpair->ctrlr, ctx->subsystem);
 				spdk_nvmf_qpair_disconnect(qpair);
 			}
 		}
@@ -567,6 +585,10 @@ spdk_nvmf_transport_stop_listen_async(struct spdk_nvmf_transport *transport,
 	ctx->transport = transport;
 	ctx->cb_fn = cb_fn;
 	ctx->cb_arg = cb_arg;
+
+	SPDK_NOTICELOG("LH-NVMF stop_listen_async START %s:%s subsystem=%p\n",
+		       trid->traddr, trid->trsvcid, subsystem);
+	nvmf_lh_dump_backtrace("stop_listen_async");
 
 	spdk_for_each_channel(transport->tgt, nvmf_stop_listen_disconnect_qpairs, ctx,
 			      nvmf_stop_listen_fini);
