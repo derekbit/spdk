@@ -500,6 +500,7 @@ struct connect_ctx {
     struct spdk_nvme_qpair *qpair;
     struct spdk_nvme_poll_group *poll_group;
     struct spdk_poller *poller;
+    bool in_poller;
 
     connect_complete_cb cb_fn;
     void *cb_arg;
@@ -508,12 +509,41 @@ struct connect_ctx {
 static void
 nvme_connect_complete(struct connect_ctx *ctx, int status)
 {
+    struct spdk_nvme_qpair *qpair = ctx->qpair;
+
+    /* Clear before invoking cb_fn so a reentrant disconnect of this same qpair
+     * (e.g. triggered by the callback) does not complete/free ctx twice. */
+    if (qpair != NULL) {
+        qpair->async_connect_ctx = NULL;
+    }
+
     if (ctx->cb_fn) {
-        ctx->cb_fn(ctx->qpair, status, ctx->cb_arg);
+        ctx->cb_fn(qpair, status, ctx->cb_arg);
     }
 
     spdk_poller_unregister(&ctx->poller);
     free(ctx);
+}
+
+void
+nvme_transport_qpair_abort_async_connect(struct spdk_nvme_qpair *qpair)
+{
+    struct connect_ctx *ctx = qpair->async_connect_ctx;
+
+    if (ctx == NULL) {
+        return;
+    }
+
+    qpair->async_connect_ctx = NULL;
+    ctx->qpair = NULL;
+
+    /* nvme_connect_poller() re-enters this path through the poll group's
+     * disconnect callback, and still holds ctx on its stack. Leave the
+     * unregister and the free to it.
+     */
+    if (!ctx->in_poller) {
+        nvme_connect_complete(ctx, -ECANCELED);
+    }
 }
 
 static int
@@ -523,6 +553,13 @@ nvme_connect_poller(void *arg)
     struct spdk_nvme_qpair *qpair = ctx->qpair;
     int rc;
 
+    if (qpair == NULL || qpair->ctrlr == NULL) {
+        nvme_connect_complete(ctx, -ECANCELED);
+        return SPDK_POLLER_BUSY;
+    }
+
+    ctx->in_poller = true;
+
     if (ctx->poll_group && spdk_nvme_ctrlr_is_fabrics(qpair->ctrlr)) {
         rc = spdk_nvme_poll_group_process_completions(ctx->poll_group, 0,
                                                       nvme_transport_connect_qpair_fail);
@@ -530,8 +567,16 @@ nvme_connect_poller(void *arg)
         rc = spdk_nvme_qpair_process_completions(qpair, 0);
     }
 
+    ctx->in_poller = false;
+
     if (rc < 0) {
         nvme_connect_complete(ctx, rc);
+        return SPDK_POLLER_BUSY;
+    }
+
+    /* Cancelled underneath us while the poll group ran. */
+    if (ctx->qpair == NULL) {
+        nvme_connect_complete(ctx, -ECANCELED);
         return SPDK_POLLER_BUSY;
     }
 
@@ -569,6 +614,8 @@ start_async_qpair_connect(struct spdk_nvme_qpair *qpair,
         free(ctx);
         return -ENOMEM;
     }
+
+    qpair->async_connect_ctx = ctx;
 
     return 0;
 }
@@ -663,6 +710,8 @@ nvme_transport_ctrlr_disconnect_qpair(struct spdk_nvme_ctrlr *ctrlr, struct spdk
 	    nvme_qpair_get_state(qpair) == NVME_QPAIR_DISCONNECTED) {
 		return;
 	}
+
+	nvme_transport_qpair_abort_async_connect(qpair);
 
 	nvme_qpair_set_state(qpair, NVME_QPAIR_DISCONNECTING);
 	assert(transport != NULL);

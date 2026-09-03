@@ -548,6 +548,12 @@ struct spdk_nvme_qpair {
 
 	void					*req_buf;
 
+	/* Non-NULL while an asynchronous TCP fabrics connect (see start_async_qpair_connect())
+	 * is in flight. Used to cancel the poller if the qpair is disconnected/destroyed before
+	 * the connect completes, so it does not touch a freed qpair.
+	 */
+	void					*async_connect_ctx;
+
 	/* In-band authentication state */
 	struct nvme_auth			auth;
 };
@@ -1434,6 +1440,7 @@ int nvme_qpair_init(struct spdk_nvme_qpair *qpair, uint16_t id,
 		    enum spdk_nvme_qprio qprio,
 		    uint32_t num_requests, bool async);
 void	nvme_qpair_deinit(struct spdk_nvme_qpair *qpair);
+void	nvme_transport_qpair_abort_async_connect(struct spdk_nvme_qpair *qpair);
 void	nvme_qpair_complete_error_reqs(struct spdk_nvme_qpair *qpair);
 int	nvme_qpair_submit_request(struct spdk_nvme_qpair *qpair,
 				  struct nvme_request *req);

@@ -1023,6 +1023,7 @@ nvme_qpair_init(struct spdk_nvme_qpair *qpair, uint16_t id,
 	qpair->is_new_qpair = true;
 	qpair->async = async;
 	qpair->fabric_poll_status = NULL;
+	qpair->async_connect_ctx = NULL;
 	qpair->num_outstanding_reqs = 0;
 
 	qpair->poll_group = NULL;
@@ -1080,6 +1081,8 @@ nvme_qpair_deinit(struct spdk_nvme_qpair *qpair)
 	struct nvme_error_cmd *cmd, *entry;
 
 	assert(!qpair->fabric_poll_status);
+
+	nvme_transport_qpair_abort_async_connect(qpair);
 
 	nvme_qpair_abort_queued_reqs(qpair);
 	_nvme_qpair_complete_abort_queued_reqs(qpair);
