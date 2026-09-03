@@ -123,6 +123,18 @@ parse_single_request(struct spdk_jsonrpc_request *request, const struct spdk_jso
 		}
 	}
 
+	/* LH debug: ground truth of every request that actually reached the RPC dispatcher. */
+	if (req.id != NULL) {
+		SPDK_NOTICELOG("LH-RPC recv conn=%p id=%.*s method=%.*s\n",
+			       request->conn,
+			       (int)req.id->len, (const char *)req.id->start,
+			       (int)req.method->len, (const char *)req.method->start);
+	} else {
+		SPDK_NOTICELOG("LH-RPC recv conn=%p id=<none> method=%.*s\n",
+			       request->conn,
+			       (int)req.method->len, (const char *)req.method->start);
+	}
+
 	jsonrpc_server_handle_request(request, req.method, params);
 	return;
 

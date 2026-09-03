@@ -32,8 +32,11 @@ nvmf_lh_dump_backtrace(const char *tag)
 	int count, i;
 	static int enabled = -1;
 
+	/* On by default for this debug branch; set SPDK_LH_NVMF_BT=0 to silence it. */
 	if (spdk_unlikely(enabled < 0)) {
-		enabled = getenv("SPDK_LH_NVMF_BT") != NULL ? 1 : 0;
+		const char *env = getenv("SPDK_LH_NVMF_BT");
+
+		enabled = (env != NULL && env[0] == '0') ? 0 : 1;
 	}
 	if (enabled == 0) {
 		return;
