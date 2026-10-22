@@ -5001,6 +5001,131 @@ blob_delete_snapshot_partial_ep_power_failure(void)
 	CU_ASSERT(failed_once);
 }
 
+/* Rewrite the extent page 'ep_idx' of a closed blob on the test device so that it
+ * describes 'count' clusters (padding with unallocated entries if growing). */
+static void
+ut_resize_extent_page_on_dev(struct spdk_blob_store *bs, uint32_t md_page, uint32_t count)
+{
+	struct spdk_blob_md_page *page;
+	struct spdk_blob_md_descriptor_extent_page *desc;
+	uint64_t offset;
+	uint32_t old_count;
+
+	offset = bs_md_page_to_lba(bs, md_page) * bs->dev->blocklen;
+	page = (struct spdk_blob_md_page *)&g_dev_buffer[offset];
+	desc = (struct spdk_blob_md_descriptor_extent_page *)page->descriptors;
+	SPDK_CU_ASSERT_FATAL(desc->type == SPDK_MD_DESCRIPTOR_TYPE_EXTENT_PAGE);
+
+	old_count = (desc->length - sizeof(desc->start_cluster_idx)) / sizeof(desc->cluster_idx[0]);
+	if (count > old_count) {
+		memset(&desc->cluster_idx[old_count], 0, (count - old_count) * sizeof(desc->cluster_idx[0]));
+	} else {
+		memset(&desc->cluster_idx[count], 0, (old_count - count) * sizeof(desc->cluster_idx[0]));
+	}
+	desc->length = sizeof(desc->start_cluster_idx) + count * sizeof(desc->cluster_idx[0]);
+	page->crc = blob_md_page_calc_crc(page);
+}
+
+static void
+blob_load_bad_extent_page_fails_blob(void)
+{
+	struct spdk_blob_store *bs = g_bs;
+	struct spdk_blob_opts opts;
+	struct spdk_blob *blob;
+	struct spdk_io_channel *ch;
+	spdk_blob_id short_id, tail_id, long_id, good_id;
+	uint32_t short_ep, tail_ep, long_ep;
+	uint8_t payload[BLOCKLEN];
+	uint64_t io_units_per_cluster;
+
+	if (!g_use_extent_table) {
+		return;
+	}
+
+	memset(payload, 0xAA, sizeof(payload));
+	io_units_per_cluster = spdk_bs_get_cluster_size(bs) / spdk_bs_get_io_unit_size(bs);
+	ch = spdk_bs_alloc_io_channel(bs);
+	SPDK_CU_ASSERT_FATAL(ch != NULL);
+
+	ut_spdk_blob_opts_init(&opts);
+	opts.thin_provision = true;
+
+	/* 2048 clusters, extent page 1 allocated: later made short (88 of 512 entries). */
+	opts.num_clusters = 2048;
+	blob = ut_blob_create_and_open(bs, &opts);
+	short_id = spdk_blob_get_id(blob);
+	spdk_blob_io_write(blob, ch, payload, 550 * io_units_per_cluster, 1, blob_op_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+	short_ep = blob->active.extent_pages[1];
+	spdk_blob_close(blob, blob_op_complete, NULL);
+	poll_threads();
+
+	/* 700 clusters, extent page 1 is the last page and holds 188 entries: later made short
+	 * (88 of 188 entries). Loading it must not silently shrink the blob to 600 clusters. */
+	opts.num_clusters = 700;
+	blob = ut_blob_create_and_open(bs, &opts);
+	tail_id = spdk_blob_get_id(blob);
+	spdk_blob_io_write(blob, ch, payload, 650 * io_units_per_cluster, 1, blob_op_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+	tail_ep = blob->active.extent_pages[1];
+	spdk_blob_close(blob, blob_op_complete, NULL);
+	poll_threads();
+
+	/* 600 clusters, extent page 1 holds 88 entries: later made longer than the blob. */
+	opts.num_clusters = 600;
+	blob = ut_blob_create_and_open(bs, &opts);
+	long_id = spdk_blob_get_id(blob);
+	spdk_blob_io_write(blob, ch, payload, 550 * io_units_per_cluster, 1, blob_op_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+	long_ep = blob->active.extent_pages[1];
+	spdk_blob_close(blob, blob_op_complete, NULL);
+	poll_threads();
+
+	/* An untouched blob that must keep loading. */
+	opts.num_clusters = 600;
+	blob = ut_blob_create_and_open(bs, &opts);
+	good_id = spdk_blob_get_id(blob);
+	spdk_blob_close(blob, blob_op_complete, NULL);
+	poll_threads();
+
+	spdk_bs_free_io_channel(ch);
+	poll_threads();
+
+	ut_resize_extent_page_on_dev(bs, short_ep, 88);
+	ut_resize_extent_page_on_dev(bs, tail_ep, 88);
+	ut_resize_extent_page_on_dev(bs, long_ep, 512);
+
+	ut_bs_reload(&bs, NULL);
+
+	/* The bad blobs fail to open instead of aborting the application or shrinking. */
+	g_blob = NULL;
+	spdk_bs_open_blob(bs, short_id, blob_op_with_handle_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == -EINVAL);
+	CU_ASSERT(g_blob == NULL);
+
+	g_blob = NULL;
+	spdk_bs_open_blob(bs, tail_id, blob_op_with_handle_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == -EINVAL);
+	CU_ASSERT(g_blob == NULL);
+
+	g_blob = NULL;
+	spdk_bs_open_blob(bs, long_id, blob_op_with_handle_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == -EINVAL);
+	CU_ASSERT(g_blob == NULL);
+
+	spdk_bs_open_blob(bs, good_id, blob_op_with_handle_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+	SPDK_CU_ASSERT_FATAL(g_blob != NULL);
+	ut_blob_close_and_delete(bs, g_blob);
+}
+
 static void
 blob_thin_prov_rw(void)
 {
@@ -11949,6 +12074,7 @@ main(int argc, char **argv)
 		CU_ADD_TEST(suite_bs, blob_thin_prov_alloc);
 		CU_ADD_TEST(suite_bs, blob_insert_cluster_msg_test);
 		CU_ADD_TEST(suite_bs, blob_delete_snapshot_partial_ep_after_resize);
+		CU_ADD_TEST(suite_bs, blob_load_bad_extent_page_fails_blob);
 		CU_ADD_TEST(suite_bs, blob_thin_prov_rw);
 		CU_ADD_TEST(suite_bs, blob_out_of_clusters_warn_once);
 		CU_ADD_TEST(suite_bs, blob_out_of_md_pages_warn_once);

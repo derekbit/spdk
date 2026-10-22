@@ -908,6 +908,14 @@ blob_parse_page(const struct spdk_blob_md_page *page, struct spdk_blob *blob)
 				return -EINVAL;
 			}
 
+			if (blob->remaining_clusters_in_et < cluster_count) {
+				SPDK_ERRLOG("Blob 0x%" PRIx64 ": extent page at cluster %" PRIu32 " has %u clusters, "
+					    "but the extent table has only %" PRIu64 " clusters left\n",
+					    blob->id, desc_extent->start_cluster_idx, cluster_count,
+					    blob->remaining_clusters_in_et);
+				return -EINVAL;
+			}
+
 			tmp = realloc(blob->active.clusters,
 				      (cluster_count + blob->active.num_clusters) * sizeof(*blob->active.clusters));
 			if (tmp == NULL) {
@@ -928,7 +936,6 @@ blob_parse_page(const struct spdk_blob_md_page *page, struct spdk_blob *blob)
 				}
 			}
 			assert(desc_extent->start_cluster_idx + cluster_count == blob->active.num_clusters);
-			assert(blob->remaining_clusters_in_et >= cluster_count);
 			blob->remaining_clusters_in_et -= cluster_count;
 		} else if (desc->type == SPDK_MD_DESCRIPTOR_TYPE_XATTR) {
 			int rc;
@@ -1803,7 +1810,6 @@ blob_load_cpl_extents_cpl(spdk_bs_sequence_t *seq, void *cb_arg, int bserrno)
 			blob->remaining_clusters_in_et -= sz;
 
 			assert(spdk_blob_is_thin_provisioned(blob));
-			assert(i + 1 < blob->active.num_extent_pages || blob->remaining_clusters_in_et == 0);
 
 			tmp = realloc(blob->active.clusters, blob->active.num_clusters * sizeof(*blob->active.clusters));
 			if (tmp == NULL) {
@@ -1815,6 +1821,16 @@ blob_load_cpl_extents_cpl(spdk_bs_sequence_t *seq, void *cb_arg, int bserrno)
 			blob->active.clusters = tmp;
 			blob->active.cluster_array_size = blob->active.num_clusters;
 		}
+	}
+
+	if (blob->remaining_clusters_in_et != 0) {
+		/* The extent pages describe fewer clusters than the extent table, e.g. a short extent
+		 * page in the middle of the blob or as its last page. Loading it would either hit an
+		 * assert or silently shrink the blob. Fail this blob only. */
+		SPDK_ERRLOG("Blob 0x%" PRIx64 ": extent pages describe %" PRIu64 " clusters less "
+			    "than the extent table\n", blob->id, blob->remaining_clusters_in_et);
+		blob_load_final(ctx, -EINVAL);
+		return;
 	}
 
 	blob_load_backing_dev(seq, ctx);
