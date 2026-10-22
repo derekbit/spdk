@@ -9145,6 +9145,8 @@ struct delete_snapshot_ctx {
 	void *cb_arg;
 	int bserrno;
 	uint32_t next_extent_page;
+	/* Md page claimed for the extent page write in flight, 0 if none */
+	uint32_t new_extent_page;
 };
 
 static void
@@ -9368,12 +9370,65 @@ delete_snapshot_update_extent_pages_cpl(struct delete_snapshot_ctx *ctx)
 	spdk_blob_sync_md(ctx->clone, delete_snapshot_sync_clone_cpl, ctx);
 }
 
+/* Number of clusters that extent page 'ep_idx' of 'blob' describes when serialized. */
+static uint64_t
+blob_extent_page_cluster_count(const struct spdk_blob *blob, uint64_t ep_idx)
+{
+	uint64_t start = ep_idx * SPDK_EXTENTS_PER_EP;
+
+	if (blob->active.num_clusters <= start) {
+		return 0;
+	}
+
+	return spdk_min(blob->active.num_clusters - start, SPDK_EXTENTS_PER_EP);
+}
+
+static void
+delete_snapshot_update_extent_pages_fail(struct delete_snapshot_ctx *ctx, int bserrno)
+{
+	ctx->bserrno = bserrno;
+
+	/* Restore snapshot to previous state */
+	bserrno = blob_remove_xattr(ctx->snapshot, SNAPSHOT_PENDING_REMOVAL, true);
+	if (bserrno != 0) {
+		delete_snapshot_cleanup_clone(ctx, bserrno);
+		return;
+	}
+
+	spdk_blob_sync_md(ctx->snapshot, delete_snapshot_cleanup_clone, ctx);
+}
+
 static void
 delete_snapshot_update_extent_pages(void *cb_arg, int bserrno)
 {
 	struct delete_snapshot_ctx *ctx = cb_arg;
+	struct spdk_blob_store *bs = ctx->clone->bs;
 	uint32_t *extent_page;
+	uint32_t new_page;
 	uint64_t i;
+
+	if (bserrno != 0) {
+		SPDK_ERRLOG("Failed to write extent page of blob 0x%" PRIx64 ": %d\n",
+			    ctx->clone->id, bserrno);
+		if (ctx->new_extent_page != 0) {
+			/* The page was claimed for this write but never reached the device. Do not leave
+			 * the clone pointing at it, or a later metadata sync of the clone would persist
+			 * a reference to an invalid extent page. The clone then falls back to the
+			 * snapshot, which is restored below. */
+			bool warned;
+
+			ctx->clone->active.extent_pages[ctx->next_extent_page - 1] = 0;
+			spdk_spin_lock(&bs->used_lock);
+			warned = bs->out_of_clusters_warned;
+			bs_release_md_page(bs, ctx->new_extent_page);
+			bs->out_of_clusters_warned = warned;
+			spdk_spin_unlock(&bs->used_lock);
+			ctx->new_extent_page = 0;
+		}
+		delete_snapshot_update_extent_pages_fail(ctx, bserrno);
+		return;
+	}
+	ctx->new_extent_page = 0;
 
 	for (i = ctx->next_extent_page; i < ctx->snapshot->active.num_extent_pages &&
 	     i < ctx->clone->active.num_extent_pages; i++) {
@@ -9384,13 +9439,37 @@ delete_snapshot_update_extent_pages(void *cb_arg, int bserrno)
 
 		extent_page = &ctx->clone->active.extent_pages[i];
 		if (*extent_page == 0) {
-			/* Copy extent page from snapshot when clone did not have a matching one */
-			*extent_page = ctx->snapshot->active.extent_pages[i];
-			continue;
+			if (blob_extent_page_cluster_count(ctx->snapshot, i) ==
+			    blob_extent_page_cluster_count(ctx->clone, i)) {
+				/* Copy extent page from snapshot when clone did not have a matching one */
+				*extent_page = ctx->snapshot->active.extent_pages[i];
+				continue;
+			}
+
+			/* The snapshot extent page holds a different number of entries than the
+			 * clone needs at this index, e.g. the partial last page of a snapshot
+			 * that is smaller than its (expanded) clone. Reusing it would leave a
+			 * short extent page in the middle of the clone, which fails to load.
+			 * Write a new extent page for the clone instead. The snapshot page is
+			 * left untouched and is released together with the snapshot, so a crash
+			 * before the clone metadata is persisted keeps both blobs consistent. */
+			spdk_spin_lock(&bs->used_lock);
+			new_page = spdk_bit_array_find_first_clear(bs->used_md_pages, 1);
+			if (new_page == UINT32_MAX) {
+				spdk_spin_unlock(&bs->used_lock);
+				SPDK_ERRLOG("No free md page for extent page of blob 0x%" PRIx64 "\n",
+					    ctx->clone->id);
+				delete_snapshot_update_extent_pages_fail(ctx, -ENOSPC);
+				return;
+			}
+			bs_claim_md_page(bs, new_page);
+			spdk_spin_unlock(&bs->used_lock);
+			*extent_page = new_page;
+			ctx->new_extent_page = new_page;
 		}
 
-		/* Clone and snapshot both contain partially filled matching extent pages.
-		 * Update the clone extent page in place with cluster map containing the mix of both. */
+		/* Write the clone extent page with its cluster map, which already contains
+		 * the clusters inherited from the snapshot. */
 		ctx->next_extent_page = i + 1;
 
 		blob_write_extent_page(ctx->clone, *extent_page, i * SPDK_EXTENTS_PER_EP, ctx->page,
