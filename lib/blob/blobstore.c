@@ -509,11 +509,56 @@ blob_set_back_bs_dev(struct spdk_blob *blob, struct spdk_bs_dev *back_bs_dev,
 struct freeze_io_ctx {
 	struct spdk_bs_cpl cpl;
 	struct spdk_blob *blob;
+
+	/* Set while the freeze waits on a channel, see blob_io_sync(). */
+	struct spdk_io_channel_iter *iter;
+	TAILQ_ENTRY(freeze_io_ctx) link;
 };
+
+static bool
+bs_channel_allocating_cluster(struct spdk_bs_channel *ch, struct spdk_blob *blob)
+{
+	struct spdk_bs_request_set *set = TAILQ_FIRST(&ch->need_cluster_alloc);
+
+	/* The head of need_cluster_alloc is the op whose cluster allocation is in
+	 * flight. The ops queued behind it are re-executed when it completes, and
+	 * then go through the frozen check like any new I/O. */
+	return set != NULL && set->u.user_op.blob == blob;
+}
+
+static void
+bs_channel_resume_freeze_waiters(struct spdk_bs_channel *ch)
+{
+	struct freeze_io_ctx *ctx, *tmp;
+
+	TAILQ_FOREACH_SAFE(ctx, &ch->freeze_waiters, link, tmp) {
+		if (!bs_channel_allocating_cluster(ch, ctx->blob)) {
+			TAILQ_REMOVE(&ch->freeze_waiters, ctx, link);
+			spdk_for_each_channel_continue(ctx->iter, 0);
+		}
+	}
+}
 
 static void
 blob_io_sync(struct spdk_io_channel_iter *i)
 {
+	struct spdk_io_channel *_ch = spdk_io_channel_iter_get_channel(i);
+	struct spdk_bs_channel *ch = spdk_io_channel_get_ctx(_ch);
+	struct freeze_io_ctx *ctx = spdk_io_channel_iter_get_ctx(i);
+
+	/*
+	 * New I/O to the blob is queued from now on, but a cluster allocation that
+	 * started before the freeze still has to insert the cluster into the
+	 * blob's cluster map and extent table on the md thread. The caller of the
+	 * freeze may replace both (e.g. a snapshot swaps them), so wait for the
+	 * allocation to complete before moving on to the next channel.
+	 */
+	if (bs_channel_allocating_cluster(ch, ctx->blob)) {
+		ctx->iter = i;
+		TAILQ_INSERT_TAIL(&ch->freeze_waiters, ctx, link);
+		return;
+	}
+
 	spdk_for_each_channel_continue(i, 0);
 }
 
@@ -2832,6 +2877,9 @@ blob_allocate_and_copy_cluster_cpl(void *cb_arg, int bserrno)
 {
 	struct spdk_blob_copy_cluster_ctx *ctx = cb_arg;
 	struct spdk_bs_request_set *set = (struct spdk_bs_request_set *)ctx->seq;
+	/* set is already back on the channel's free list and may be reused by the
+	 * ops re-executed below, so keep the channel for the end. */
+	struct spdk_bs_channel *ch = set->channel;
 	TAILQ_HEAD(, spdk_bs_request_set) requests;
 	spdk_bs_user_op_t *op;
 
@@ -2850,6 +2898,8 @@ blob_allocate_and_copy_cluster_cpl(void *cb_arg, int bserrno)
 
 	spdk_free(ctx->buf);
 	free(ctx);
+
+	bs_channel_resume_freeze_waiters(ch);
 }
 
 static void
@@ -3935,6 +3985,7 @@ bs_channel_create(void *io_device, void *ctx_buf)
 	TAILQ_INIT(&channel->need_cluster_alloc);
 	TAILQ_INIT(&channel->queued_io);
 	TAILQ_INIT(&channel->pending_free_cluster);
+	TAILQ_INIT(&channel->freeze_waiters);
 
 	RB_INIT(&channel->esnap_channels);
 
@@ -3952,6 +4003,10 @@ bs_channel_destroy(void *io_device, void *ctx_buf)
 		TAILQ_REMOVE(&channel->need_cluster_alloc, op, link);
 		bs_user_op_abort(op, -EIO);
 	}
+
+	/* A freeze only waits on a channel with a cluster allocation in flight,
+	 * and a channel must not be destroyed with I/O in flight. */
+	assert(TAILQ_EMPTY(&channel->freeze_waiters));
 
 	while (!TAILQ_EMPTY(&channel->queued_io)) {
 		op = TAILQ_FIRST(&channel->queued_io);
@@ -10161,10 +10216,12 @@ blob_insert_cluster_msg(void *arg)
 	if (ctx->blob->use_extent_table && ctx->extent_page == 0 &&
 	    *bs_cluster_to_extent_page(ctx->blob, ctx->cluster_num) == 0) {
 		/* The extent page was present when the cluster was allocated on the
-		 * original thread, so no md page was claimed there. It has since been
-		 * cleared, e.g. a snapshot took over the extent table of this blob while
-		 * the cluster allocation was in flight. Leave the metadata untouched and
-		 * let the original thread release the cluster and retry the I/O.
+		 * original thread, so no md page was claimed there, but it is gone now.
+		 * blob_freeze_io() waits for cluster allocations in flight, so the
+		 * extent table should not be replaced (e.g. by a snapshot) under an
+		 * allocation; this is a safety net so that the extent page is never
+		 * written over md page 0. Leave the metadata untouched and let the
+		 * original thread release the cluster and retry the I/O.
 		 * blob_insert_cluster_cpl() treats -EAGAIN as this retry request, so
 		 * do not return -EAGAIN from this function for any other reason. */
 		blob_op_cluster_msg_cb(ctx, -EAGAIN);

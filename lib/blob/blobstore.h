@@ -252,6 +252,9 @@ struct spdk_bs_channel {
 
 	TAILQ_HEAD(, spdk_blob_free_cluster_ctx) pending_free_cluster;
 
+	/* Freezes waiting for a cluster allocation in flight on this channel. */
+	TAILQ_HEAD(, freeze_io_ctx) freeze_waiters;
+
 	RB_HEAD(blob_esnap_channel_tree, blob_esnap_channel) esnap_channels;
 };
 
