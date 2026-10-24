@@ -2812,6 +2812,8 @@ struct spdk_blob_copy_cluster_ctx {
 	uint32_t new_extent_page;
 	spdk_bs_sequence_t *seq;
 	struct spdk_blob_md_page *new_cluster_page;
+	/* Error to complete the allocation with, once the cluster is cleared */
+	int rc;
 };
 
 struct spdk_blob_free_cluster_ctx {
@@ -2910,13 +2912,29 @@ static void
 blob_insert_cluster_clear_cpl(void *cb_arg, int bserrno)
 {
 	struct spdk_blob_copy_cluster_ctx *ctx = cb_arg;
+	bool warned;
 
 	if (bserrno) {
-		SPDK_WARNLOG("Failed to clear cluster: %d\n", bserrno);
+		/* The cluster may still hold data: never release it, so that it
+		 * cannot be allocated, and read, by another blob. It is leaked
+		 * until the blobstore is recovered after a dirty shutdown. Release
+		 * the md page claimed for it, as nothing points at it. */
+		SPDK_ERRLOG("blob 0x%" PRIx64 ": failed to clear cluster %" PRIu64
+			    ": %d, the cluster is leaked\n", ctx->blob->id, ctx->new_cluster, bserrno);
+		if (ctx->new_extent_page != 0) {
+			/* Internal rollback, not a user-visible free: keep the
+			 * out-of-space warn gate as it was. */
+			spdk_spin_lock(&ctx->blob->bs->used_lock);
+			warned = ctx->blob->bs->out_of_clusters_warned;
+			bs_release_md_page(ctx->blob->bs, ctx->new_extent_page);
+			ctx->blob->bs->out_of_clusters_warned = warned;
+			spdk_spin_unlock(&ctx->blob->bs->used_lock);
+		}
+	} else {
+		blob_insert_cluster_revert(ctx);
 	}
 
-	blob_insert_cluster_revert(ctx);
-	bs_sequence_finish(ctx->seq, bserrno);
+	bs_sequence_finish(ctx->seq, ctx->rc != 0 ? ctx->rc : bserrno);
 }
 
 static void
@@ -2980,8 +2998,10 @@ blob_write_copy_cpl(spdk_bs_sequence_t *seq, void *cb_arg, int bserrno)
 	uint32_t cluster_number;
 
 	if (bserrno) {
-		/* The write failed, so jump to the final completion handler */
-		bs_sequence_finish(seq, bserrno);
+		/* The write failed: clear the cluster, which may hold part of the
+		 * data, release it, and jump to the final completion handler */
+		ctx->rc = bserrno;
+		blob_insert_cluster_clear(ctx);
 		return;
 	}
 
@@ -2997,7 +3017,9 @@ blob_write_copy(spdk_bs_sequence_t *seq, void *cb_arg, int bserrno)
 	struct spdk_blob_copy_cluster_ctx *ctx = cb_arg;
 
 	if (bserrno != 0) {
-		/* The read failed, so jump to the final completion handler */
+		/* The read failed: release the cluster, and jump to the final
+		 * completion handler */
+		blob_insert_cluster_revert(ctx);
 		bs_sequence_finish(seq, bserrno);
 		return;
 	}
@@ -3038,7 +3060,9 @@ blob_write_zeros_cpl(spdk_bs_sequence_t *seq, void *cb_arg, int bserrno)
 	uint32_t cluster_number;
 
 	if (bserrno) {
-		/* The write failed, so jump to the final completion handler */
+		/* The write failed: release the cluster, and jump to the final
+		 * completion handler */
+		blob_insert_cluster_revert(ctx);
 		bs_sequence_finish(seq, bserrno);
 		return;
 	}
@@ -3153,15 +3177,7 @@ bs_allocate_and_copy_cluster(struct spdk_blob *blob,
 
 	ctx->seq = bs_sequence_start_blob(_ch, &cpl, blob);
 	if (!ctx->seq) {
-		/* Internal rollback, not a user-visible free: keep the
-		 * out-of-space warn gate as it was. */
-		bool seq_warned;
-
-		spdk_spin_lock(&blob->bs->used_lock);
-		seq_warned = blob->bs->out_of_clusters_warned;
-		bs_release_cluster(blob->bs, ctx->new_cluster);
-		blob->bs->out_of_clusters_warned = seq_warned;
-		spdk_spin_unlock(&blob->bs->used_lock);
+		blob_insert_cluster_revert(ctx);
 		spdk_free(ctx->buf);
 		free(ctx);
 		bs_user_op_abort(op, -ENOMEM);

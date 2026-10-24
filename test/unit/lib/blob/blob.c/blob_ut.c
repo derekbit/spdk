@@ -5010,6 +5010,239 @@ blob_insert_cluster_eagain_retry(void)
 }
 
 static void
+ut_blob_read_check(struct spdk_blob *blob, struct spdk_io_channel *channel, uint64_t io_unit,
+		   uint8_t pattern)
+{
+	uint8_t payload[BLOCKLEN];
+	uint8_t expected[BLOCKLEN];
+
+	memset(expected, pattern, sizeof(expected));
+	memset(payload, ~pattern, sizeof(payload));
+	spdk_blob_io_read(blob, channel, payload, io_unit, 1, blob_op_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+	CU_ASSERT(memcmp(payload, expected, sizeof(payload)) == 0);
+}
+
+/*
+ * A cluster allocation cannot start its copy-on-write sequence (-ENOMEM). The
+ * cluster, and the md page claimed for a new extent page, are released.
+ */
+static void
+blob_cluster_alloc_nomem(void)
+{
+	struct spdk_blob_store *bs = g_bs;
+	struct spdk_blob *blob;
+	struct spdk_blob_opts opts;
+	struct spdk_io_channel *channel;
+	struct spdk_bs_channel *bs_channel;
+	struct spdk_bs_request_set *set;
+	TAILQ_HEAD(, spdk_bs_request_set) reqs;
+	uint8_t payload[BLOCKLEN];
+	uint64_t free_clusters;
+	uint32_t used_md_pages;
+	int write_rc = INT_MIN;
+
+	ut_spdk_blob_opts_init(&opts);
+	opts.thin_provision = true;
+	opts.num_clusters = 4;
+	blob = ut_blob_create_and_open(bs, &opts);
+	channel = spdk_bs_alloc_io_channel(bs);
+	SPDK_CU_ASSERT_FATAL(channel != NULL);
+	bs_channel = spdk_io_channel_get_ctx(channel);
+	free_clusters = spdk_bs_free_cluster_count(bs);
+	used_md_pages = spdk_bit_array_count_set(bs->used_md_pages);
+
+	/* Leave a single request set: the user op takes it, and the allocation
+	 * finds none for its sequence. */
+	TAILQ_INIT(&reqs);
+	while ((set = TAILQ_FIRST(&bs_channel->reqs)) != NULL && TAILQ_NEXT(set, link) != NULL) {
+		TAILQ_REMOVE(&bs_channel->reqs, set, link);
+		TAILQ_INSERT_TAIL(&reqs, set, link);
+	}
+	memset(payload, 0xAA, sizeof(payload));
+	spdk_blob_io_write(blob, channel, payload, 0, 1, blob_op_complete, &write_rc);
+	poll_threads();
+	TAILQ_CONCAT(&bs_channel->reqs, &reqs, link);
+	CU_ASSERT(write_rc == -ENOMEM);
+	CU_ASSERT(blob->active.clusters[0] == 0);
+	CU_ASSERT(spdk_bs_free_cluster_count(bs) == free_clusters);
+	CU_ASSERT(spdk_bit_array_count_set(bs->used_md_pages) == used_md_pages);
+
+	write_rc = INT_MIN;
+	spdk_blob_io_write(blob, channel, payload, 0, 1, blob_op_complete, &write_rc);
+	poll_threads();
+	CU_ASSERT(write_rc == 0);
+	CU_ASSERT(blob->active.clusters[0] != 0);
+
+	spdk_bs_free_io_channel(channel);
+	poll_threads();
+	ut_blob_close_and_delete(bs, blob);
+}
+
+/*
+ * Fail the next write to the device, after part of its data reached the device.
+ * Unlike the power failure thresholds, only this write fails.
+ */
+static struct {
+	struct spdk_bs_dev *dev;
+	void (*write)(struct spdk_bs_dev *dev, struct spdk_io_channel *channel, void *payload,
+		      uint64_t lba, uint32_t lba_count, struct spdk_bs_dev_cb_args *cb_args);
+	uint64_t lba;
+	uint32_t lba_count;
+} g_ut_write_fail_once;
+
+static void
+ut_write_fail_once_cpl(void *arg)
+{
+	struct spdk_bs_dev_cb_args *cb_args = arg;
+
+	cb_args->cb_fn(cb_args->channel, cb_args->cb_arg, -EIO);
+}
+
+static void
+ut_write_fail_once_write(struct spdk_bs_dev *dev, struct spdk_io_channel *channel, void *payload,
+			 uint64_t lba, uint32_t lba_count, struct spdk_bs_dev_cb_args *cb_args)
+{
+	uint64_t length = (uint64_t)lba_count * dev->blocklen;
+
+	dev->write = g_ut_write_fail_once.write;
+	g_ut_write_fail_once.dev = NULL;
+	g_ut_write_fail_once.lba = lba;
+	g_ut_write_fail_once.lba_count = lba_count;
+	SPDK_CU_ASSERT_FATAL(lba * dev->blocklen + length <= DEV_BUFFER_SIZE);
+	memcpy(&g_dev_buffer[lba * dev->blocklen], payload, length / 2);
+	spdk_thread_send_msg(spdk_get_thread(), ut_write_fail_once_cpl, cb_args);
+}
+
+static void
+ut_write_fail_once_arm(struct spdk_blob_store *bs)
+{
+	g_ut_write_fail_once.dev = bs->dev;
+	g_ut_write_fail_once.write = bs->dev->write;
+	bs->dev->write = ut_write_fail_once_write;
+}
+
+/*
+ * The data I/O of a copy-on-write cluster allocation fails: the read from the
+ * parent snapshot, or the write of the new cluster. The write fails, and the
+ * cluster and the md page claimed for it are released; after a failed write,
+ * the cluster may hold part of the data, so it is cleared first. If it cannot
+ * be cleared, it is leaked rather than released, so that no other blob can read
+ * the data.
+ */
+static void
+blob_cow_cluster_alloc_io_failure(void)
+{
+	struct spdk_blob_store *bs = g_bs;
+	struct spdk_blob *blob, *snapshot;
+	struct spdk_blob_opts opts;
+	struct spdk_io_channel *channel;
+	struct spdk_power_failure_thresholds thresholds = {};
+	spdk_blob_id blobid;
+	uint8_t payload[BLOCKLEN];
+	uint64_t io_unit1, free_clusters, write_zeroes_bytes, leaked = 0;
+	uint32_t used_md_pages;
+	int write_rc;
+
+	ut_spdk_blob_opts_init(&opts);
+	opts.thin_provision = true;
+	opts.num_clusters = 4;
+	/* Clearing a cluster then shows in g_dev_write_zeroes_bytes. */
+	opts.clear_method = BLOB_CLEAR_WITH_WRITE_ZEROES;
+	blob = ut_blob_create_and_open(bs, &opts);
+	blobid = spdk_blob_get_id(blob);
+	io_unit1 = bs_cluster_to_io_unit(bs, 1);
+
+	channel = spdk_bs_alloc_io_channel(bs);
+	SPDK_CU_ASSERT_FATAL(channel != NULL);
+
+	memset(payload, 0x11, sizeof(payload));
+	spdk_blob_io_write(blob, channel, payload, io_unit1 + 1, 1, blob_op_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+	spdk_bs_create_snapshot(bs, blobid, NULL, blob_op_with_id_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+	spdk_bs_open_blob(bs, g_blobid, blob_op_with_handle_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+	SPDK_CU_ASSERT_FATAL(g_blob != NULL);
+	snapshot = g_blob;
+
+	free_clusters = spdk_bs_free_cluster_count(bs);
+	used_md_pages = spdk_bit_array_count_set(bs->used_md_pages);
+	memset(payload, 0x33, sizeof(payload));
+
+	/* With copy offload, the copy does not fail in this test; failures of
+	 * the metadata update that follows are tested separately. */
+	if (!g_dev_copy_enabled) {
+		/* The read from the parent snapshot fails. */
+		thresholds.read_threshold = 1;
+		dev_set_power_failure_thresholds(thresholds);
+		write_rc = INT_MIN;
+		spdk_blob_io_write(blob, channel, payload, io_unit1, 1, blob_op_complete, &write_rc);
+		poll_threads();
+		dev_reset_power_failure_event();
+		CU_ASSERT(write_rc == -EIO);
+		CU_ASSERT(blob->active.clusters[1] == 0);
+		CU_ASSERT(spdk_bs_free_cluster_count(bs) == free_clusters);
+		CU_ASSERT(spdk_bit_array_count_set(bs->used_md_pages) == used_md_pages);
+
+		/* The write of the new cluster fails: it is cleared. */
+		ut_write_fail_once_arm(bs);
+		write_rc = INT_MIN;
+		write_zeroes_bytes = g_dev_write_zeroes_bytes;
+		spdk_blob_io_write(blob, channel, payload, io_unit1, 1, blob_op_complete, &write_rc);
+		poll_threads();
+		CU_ASSERT(write_rc == -EIO);
+		CU_ASSERT(g_dev_write_zeroes_bytes - write_zeroes_bytes == bs->cluster_sz);
+		CU_ASSERT(spdk_mem_all_zero(&g_dev_buffer[g_ut_write_fail_once.lba * bs->dev->blocklen],
+					    (uint64_t)g_ut_write_fail_once.lba_count * bs->dev->blocklen));
+		CU_ASSERT(blob->active.clusters[1] == 0);
+		CU_ASSERT(blob->active.num_allocated_clusters == 0);
+		CU_ASSERT(spdk_bs_free_cluster_count(bs) == free_clusters);
+		CU_ASSERT(spdk_bit_array_count_set(bs->used_md_pages) == used_md_pages);
+
+		/* The write of the new cluster fails, and so does the clear: the
+		 * cluster is leaked, but the md page claimed for it is released. */
+		ut_write_fail_once_arm(bs);
+		memset(&thresholds, 0, sizeof(thresholds));
+		thresholds.write_zero_threshold = 1;
+		dev_set_power_failure_thresholds(thresholds);
+		write_rc = INT_MIN;
+		spdk_blob_io_write(blob, channel, payload, io_unit1, 1, blob_op_complete, &write_rc);
+		poll_threads();
+		dev_reset_power_failure_event();
+		leaked++;
+		CU_ASSERT(write_rc == -EIO);
+		CU_ASSERT(!spdk_mem_all_zero(&g_dev_buffer[g_ut_write_fail_once.lba * bs->dev->blocklen],
+					     (uint64_t)g_ut_write_fail_once.lba_count * bs->dev->blocklen));
+		CU_ASSERT(spdk_bit_pool_is_allocated(bs->used_clusters,
+						     bs_lba_to_cluster(bs, g_ut_write_fail_once.lba)));
+		CU_ASSERT(blob->active.clusters[1] == 0);
+		CU_ASSERT(blob->active.num_allocated_clusters == 0);
+		CU_ASSERT(spdk_bs_free_cluster_count(bs) == free_clusters - leaked);
+		CU_ASSERT(spdk_bit_array_count_set(bs->used_md_pages) == used_md_pages);
+	}
+
+	/* Without failures the copy-on-write completes. */
+	write_rc = INT_MIN;
+	spdk_blob_io_write(blob, channel, payload, io_unit1, 1, blob_op_complete, &write_rc);
+	poll_threads();
+	CU_ASSERT(write_rc == 0);
+	CU_ASSERT(blob->active.clusters[1] != 0);
+	CU_ASSERT(spdk_bs_free_cluster_count(bs) == free_clusters - leaked - 1);
+	ut_blob_read_check(blob, channel, io_unit1, 0x33);
+	ut_blob_read_check(blob, channel, io_unit1 + 1, 0x11);
+
+	spdk_bs_free_io_channel(channel);
+	poll_threads();
+	ut_blob_close_and_delete(bs, blob);
+	ut_blob_close_and_delete(bs, snapshot);
+}
+
+static void
 blob_thin_prov_rw(void)
 {
 	static const uint8_t zero[10 * BLOCKLEN] = { 0 };
@@ -11734,6 +11967,10 @@ suite_esnap_bs_setup(void)
 static void
 suite_bs_cleanup(void)
 {
+	if (g_ut_write_fail_once.dev != NULL) {
+		g_ut_write_fail_once.dev->write = g_ut_write_fail_once.write;
+		g_ut_write_fail_once.dev = NULL;
+	}
 	if (g_bs != NULL) {
 		spdk_bs_unload(g_bs, bs_op_complete, NULL);
 		poll_threads();
@@ -11958,6 +12195,8 @@ main(int argc, char **argv)
 		CU_ADD_TEST(suite_bs, blob_insert_cluster_msg_test);
 		CU_ADD_TEST(suite_bs, blob_insert_cluster_msg_snapshot_race);
 		CU_ADD_TEST(suite_bs, blob_insert_cluster_eagain_retry);
+		CU_ADD_TEST(suite_bs, blob_cow_cluster_alloc_io_failure);
+		CU_ADD_TEST(suite_bs, blob_cluster_alloc_nomem);
 		CU_ADD_TEST(suite_bs, blob_thin_prov_rw);
 		CU_ADD_TEST(suite_bs, blob_out_of_clusters_warn_once);
 		CU_ADD_TEST(suite_bs, blob_out_of_md_pages_warn_once);
