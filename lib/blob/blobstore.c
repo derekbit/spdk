@@ -30,7 +30,7 @@
 static int bs_register_md_thread(struct spdk_blob_store *bs);
 static int bs_unregister_md_thread(struct spdk_blob_store *bs);
 static void blob_close_cpl(spdk_bs_sequence_t *seq, void *cb_arg, int bserrno);
-static void blob_insert_cluster_on_md_thread(struct spdk_blob *blob, uint32_t cluster_num,
+static int blob_insert_cluster_on_md_thread(struct spdk_blob *blob, uint32_t cluster_num,
 		uint64_t cluster, uint32_t extent, struct spdk_blob_md_page *page,
 		spdk_blob_op_complete cb_fn, void *cb_arg);
 static void blob_free_cluster_on_md_thread(struct spdk_blob *blob, uint32_t cluster_num,
@@ -3029,16 +3029,32 @@ blob_insert_cluster_cpl(void *cb_arg, int bserrno)
 			 * after the cluster was allocated. Clear and free our cluster
 			 * but continue without error, so the I/O is retried.
 			 * -EAGAIN is only returned by blob_insert_cluster_msg() for
-			 * the latter; other failures (e.g. -ENOMEM, -EIO) are reverted
-			 * and reported below. */
+			 * the latter. */
 			blob_insert_cluster_clear(ctx);
 			return;
 		}
 
-		blob_insert_cluster_revert(ctx);
+		/* The cluster was inserted, but the update of the metadata
+		 * failed. blob_insert_cluster_msg() took care of the cluster
+		 * and the md page: only fail the I/O. */
 	}
 
 	bs_sequence_finish(ctx->seq, bserrno);
+}
+
+static void
+blob_insert_cluster_start(struct spdk_blob_copy_cluster_ctx *ctx, uint32_t cluster_number)
+{
+	int rc;
+
+	rc = blob_insert_cluster_on_md_thread(ctx->blob, cluster_number, ctx->new_cluster,
+					      ctx->new_extent_page, ctx->new_cluster_page,
+					      blob_insert_cluster_cpl, ctx);
+	if (rc != 0) {
+		/* The data is in the cluster already: clear it before releasing it. */
+		ctx->rc = rc;
+		blob_insert_cluster_clear(ctx);
+	}
 }
 
 static void
@@ -3057,8 +3073,7 @@ blob_write_copy_cpl(spdk_bs_sequence_t *seq, void *cb_arg, int bserrno)
 
 	cluster_number = bs_io_unit_to_cluster(ctx->blob->bs, ctx->io_unit);
 
-	blob_insert_cluster_on_md_thread(ctx->blob, cluster_number, ctx->new_cluster,
-					 ctx->new_extent_page, ctx->new_cluster_page, blob_insert_cluster_cpl, ctx);
+	blob_insert_cluster_start(ctx, cluster_number);
 }
 
 static void
@@ -3119,8 +3134,7 @@ blob_write_zeros_cpl(spdk_bs_sequence_t *seq, void *cb_arg, int bserrno)
 
 	cluster_number = bs_io_unit_to_cluster(ctx->blob->bs, ctx->io_unit);
 
-	blob_insert_cluster_on_md_thread(ctx->blob, cluster_number, ctx->new_cluster,
-					 ctx->new_extent_page, ctx->new_cluster_page, blob_insert_cluster_cpl, ctx);
+	blob_insert_cluster_start(ctx, cluster_number);
 }
 
 static void
@@ -3255,8 +3269,7 @@ bs_allocate_and_copy_cluster(struct spdk_blob *blob,
 						     bs_cluster_to_lba(blob->bs, 1),
 						     blob_write_zeros_cpl, ctx);
 		} else {
-			blob_insert_cluster_on_md_thread(ctx->blob, cluster_number, ctx->new_cluster,
-							 ctx->new_extent_page, ctx->new_cluster_page, blob_insert_cluster_cpl, ctx);
+			blob_insert_cluster_start(ctx, cluster_number);
 		}
 	}
 }
@@ -10090,16 +10103,108 @@ blob_op_cluster_msg_cb(void *arg, int bserrno)
 	spdk_thread_send_msg(ctx->thread, blob_op_cluster_msg_cpl, ctx);
 }
 
+/*
+ * The extent page of an inserted cluster could not be written. The extent table
+ * cannot point at it, so take the cluster out of the cluster map: the I/O that
+ * needed it fails, and the next one allocates a cluster again. Writes that
+ * other threads made to the cluster meanwhile are lost with it. Never release
+ * the cluster: other threads may still have writes to it in flight, and a
+ * persist of the blob after a resize, which is not serialized with cluster
+ * operations, may have written the existing extent page with it. It is leaked
+ * until the blobstore is recovered after a dirty shutdown. Release the md page
+ * that this insert claimed, as nothing points at it.
+ */
+static void
+blob_insert_cluster_abandon(struct spdk_blob_cluster_op_ctx *ctx)
+{
+	uint64_t *cluster_lba = &ctx->blob->active.clusters[ctx->cluster_num];
+	bool warned;
+
+	/* Cluster operations on an extent page are serialized, so no other
+	 * operation changed the cluster map entry since the insert. */
+	assert(*cluster_lba == bs_cluster_to_lba(ctx->blob->bs, ctx->cluster));
+	if (*cluster_lba == bs_cluster_to_lba(ctx->blob->bs, ctx->cluster)) {
+		*cluster_lba = 0;
+		assert(ctx->blob->active.num_allocated_clusters > 0);
+		ctx->blob->active.num_allocated_clusters--;
+	}
+
+	if (ctx->extent_page != 0) {
+		/* Internal rollback, not a user-visible free: keep the out-of-space
+		 * warn gate as it was. */
+		spdk_spin_lock(&ctx->blob->bs->used_lock);
+		warned = ctx->blob->bs->out_of_clusters_warned;
+		bs_release_md_page(ctx->blob->bs, ctx->extent_page);
+		ctx->blob->bs->out_of_clusters_warned = warned;
+		spdk_spin_unlock(&ctx->blob->bs->used_lock);
+		ctx->extent_page = 0;
+	}
+
+	SPDK_ERRLOG("blob 0x%" PRIx64 ": failed to write the extent page of cluster %" PRIu32
+		    ", cluster %" PRIu32 " is leaked\n", ctx->blob->id, ctx->cluster_num, ctx->cluster);
+}
+
+static void
+blob_insert_cluster_sync_cpl(void *arg, int bserrno)
+{
+	struct spdk_blob_cluster_op_ctx *ctx = arg;
+
+	if (bserrno != 0) {
+		/* The cluster stays in the blob, see blob_insert_cluster_msg(). The
+		 * persist marked the blob clean before it wrote the metadata: mark it
+		 * dirty again, so that a later sync persists the cluster. */
+		ctx->blob->state = SPDK_BLOB_STATE_DIRTY;
+	}
+
+	blob_op_cluster_msg_cb(ctx, bserrno);
+}
+
 static void
 blob_insert_new_ep_cb(void *arg, int bserrno)
 {
 	struct spdk_blob_cluster_op_ctx *ctx = arg;
 	uint32_t *extent_page;
 
+	if (bserrno != 0) {
+		blob_insert_cluster_abandon(ctx);
+		blob_op_cluster_msg_cb(ctx, bserrno);
+		return;
+	}
+
 	extent_page = bs_cluster_to_extent_page(ctx->blob, ctx->cluster_num);
 	*extent_page = ctx->extent_page;
 	ctx->blob->state = SPDK_BLOB_STATE_DIRTY;
-	blob_sync_md(ctx->blob, blob_op_cluster_msg_cb, ctx);
+	blob_sync_md(ctx->blob, blob_insert_cluster_sync_cpl, ctx);
+}
+
+static void
+blob_insert_existing_ep_cb(void *arg, int bserrno)
+{
+	struct spdk_blob_cluster_op_ctx *ctx = arg;
+
+	if (bserrno != 0) {
+		blob_insert_cluster_abandon(ctx);
+		blob_op_cluster_msg_cb(ctx, bserrno);
+		return;
+	}
+
+	if (ctx->extent_page != 0) {
+		/* The original thread claimed an md page for the extent page, but
+		 * another allocation in the same extent page created it first.
+		 * Release ours. This is a net-zero release of this operation's
+		 * own claim: keep the out-of-space warn gate as it was. */
+		bool warned;
+
+		spdk_spin_lock(&ctx->blob->bs->used_lock);
+		warned = ctx->blob->bs->out_of_clusters_warned;
+		assert(spdk_bit_array_get(ctx->blob->bs->used_md_pages, ctx->extent_page) == true);
+		bs_release_md_page(ctx->blob->bs, ctx->extent_page);
+		ctx->blob->bs->out_of_clusters_warned = warned;
+		spdk_spin_unlock(&ctx->blob->bs->used_lock);
+		ctx->extent_page = 0;
+	}
+
+	blob_op_cluster_msg_cb(ctx, 0);
 }
 
 struct spdk_blob_write_extent_page_ctx {
@@ -10234,10 +10339,17 @@ blob_insert_cluster_msg(void *arg)
 		return;
 	}
 
+	/*
+	 * From now on, other threads may see the cluster in the cluster map, write
+	 * to it, and other metadata syncs of the blob may persist it. If a sync of
+	 * the metadata fails, keep the cluster (and its new extent page) in the
+	 * blob, which stays dirty so that a later sync persists them, and only fail
+	 * the I/O that needed it, see blob_insert_cluster_sync_cpl().
+	 */
 	if (ctx->blob->use_extent_table == false) {
 		/* Extent table is not used, proceed with sync of md that will only use extents_rle. */
 		ctx->blob->state = SPDK_BLOB_STATE_DIRTY;
-		blob_sync_md(ctx->blob, blob_op_cluster_msg_cb, ctx);
+		blob_sync_md(ctx->blob, blob_insert_cluster_sync_cpl, ctx);
 		return;
 	}
 
@@ -10250,30 +10362,28 @@ blob_insert_cluster_msg(void *arg)
 		blob_write_extent_page(ctx->blob, ctx->extent_page, ctx->cluster_num, ctx->page,
 				       blob_insert_new_ep_cb, ctx);
 	} else {
-		/* It is possible for original thread to allocate extent page for
-		 * different cluster in the same extent page. In such case proceed with
-		 * updating the existing extent page, but release the additional one. */
-		if (ctx->extent_page != 0) {
-			/* Net-zero release of this operation's own claim: keep
-			 * the out-of-space warn gate as it was. */
-			bool warned;
-
-			spdk_spin_lock(&ctx->blob->bs->used_lock);
-			warned = ctx->blob->bs->out_of_clusters_warned;
-			assert(spdk_bit_array_get(ctx->blob->bs->used_md_pages, ctx->extent_page) == true);
-			bs_release_md_page(ctx->blob->bs, ctx->extent_page);
-			ctx->blob->bs->out_of_clusters_warned = warned;
-			spdk_spin_unlock(&ctx->blob->bs->used_lock);
-			ctx->extent_page = 0;
-		}
 		/* Extent page already allocated.
-		 * Every cluster allocation, requires just an update of single extent page. */
+		 * Every cluster allocation, requires just an update of single extent page.
+		 * It is possible for original thread to allocate extent page for
+		 * different cluster in the same extent page. In such case the
+		 * additional one is released once the update succeeds, see
+		 * blob_insert_existing_ep_cb(). */
 		blob_write_extent_page(ctx->blob, *extent_page, ctx->cluster_num, ctx->page,
-				       blob_op_cluster_msg_cb, ctx);
+				       blob_insert_existing_ep_cb, ctx);
 	}
 }
 
-static void
+/*
+ * Insert the cluster on the md thread. Returns -ENOMEM, without calling cb_fn, if
+ * that cannot be started; the caller still owns the cluster and the md page then.
+ * Once started, cb_fn is called with:
+ * - -EEXIST or -EAGAIN if the cluster was not inserted, see blob_insert_cluster_msg().
+ *   The caller releases the cluster.
+ * - another error if the cluster was inserted, but the update of the metadata
+ *   failed. blob_insert_cluster_msg() takes care of the cluster and the md page
+ *   then: the caller must not release them.
+ */
+static int
 blob_insert_cluster_on_md_thread(struct spdk_blob *blob, uint32_t cluster_num,
 				 uint64_t cluster, uint32_t extent_page, struct spdk_blob_md_page *page,
 				 spdk_blob_op_complete cb_fn, void *cb_arg)
@@ -10282,8 +10392,7 @@ blob_insert_cluster_on_md_thread(struct spdk_blob *blob, uint32_t cluster_num,
 
 	ctx = calloc(1, sizeof(*ctx));
 	if (ctx == NULL) {
-		cb_fn(cb_arg, -ENOMEM);
-		return;
+		return -ENOMEM;
 	}
 
 	ctx->thread = spdk_get_thread();
@@ -10297,6 +10406,7 @@ blob_insert_cluster_on_md_thread(struct spdk_blob *blob, uint32_t cluster_num,
 	ctx->msg_fn = blob_insert_cluster_msg;
 
 	spdk_thread_send_msg(blob->bs->md_thread, _blob_cluster_op, ctx);
+	return 0;
 }
 
 static void
