@@ -4874,6 +4874,142 @@ blob_insert_cluster_msg_snapshot_race(void)
 }
 
 static void
+ut_eagain_read_check(struct spdk_blob *blob, struct spdk_io_channel *channel, uint64_t io_unit,
+		     uint8_t pattern)
+{
+	uint8_t payload[BLOCKLEN];
+	uint8_t expected[BLOCKLEN];
+
+	memset(expected, pattern, sizeof(expected));
+	memset(payload, ~pattern, sizeof(payload));
+	spdk_blob_io_read(blob, channel, payload, io_unit, 1, blob_op_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+	CU_ASSERT(memcmp(payload, expected, sizeof(payload)) == 0);
+}
+
+/*
+ * The extent table of a blob is replaced while a copy-on-write cluster
+ * allocation of the blob is in flight, as a snapshot did before freezing I/O
+ * waited for cluster allocations: the insert finds neither an extent page nor
+ * an md page claimed for one, and returns -EAGAIN. blob_insert_cluster_cpl()
+ * clears and releases the discarded cluster and retries the write, which
+ * completes; the data is right after a reload.
+ */
+static void
+blob_insert_cluster_eagain_retry(void)
+{
+	struct spdk_blob_store *bs = g_bs;
+	struct spdk_blob *blob, *snapshot;
+	struct spdk_blob_opts opts;
+	struct spdk_io_channel *channel, *channel1;
+	spdk_blob_id blobid, snapshotid;
+	uint8_t payload[BLOCKLEN];
+	uint64_t io_unit1, free_clusters, write_zeroes_bytes;
+	uint32_t extent_page, used_md_pages;
+	int write_rc = INT_MIN;
+
+	if (!g_use_extent_table) {
+		return;
+	}
+
+	ut_spdk_blob_opts_init(&opts);
+	opts.thin_provision = true;
+	opts.num_clusters = 4;
+	/* Clearing a cluster then shows in g_dev_write_zeroes_bytes. */
+	opts.clear_method = BLOB_CLEAR_WITH_WRITE_ZEROES;
+	blob = ut_blob_create_and_open(bs, &opts);
+	blobid = spdk_blob_get_id(blob);
+	io_unit1 = bs_cluster_to_io_unit(bs, 1);
+	channel = spdk_bs_alloc_io_channel(bs);
+	SPDK_CU_ASSERT_FATAL(channel != NULL);
+
+	/* The parent snapshot holds data in cluster 1, and the copy-on-write of
+	 * cluster 0 creates the extent page of clusters 0 and 1. */
+	memset(payload, 0x11, sizeof(payload));
+	spdk_blob_io_write(blob, channel, payload, io_unit1 + 1, 1, blob_op_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+	spdk_bs_create_snapshot(bs, blobid, NULL, blob_op_with_id_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+	snapshotid = g_blobid;
+	memset(payload, 0x22, sizeof(payload));
+	spdk_blob_io_write(blob, channel, payload, 0, 1, blob_op_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+	extent_page = blob->active.extent_pages[0];
+	CU_ASSERT(extent_page != 0);
+
+	free_clusters = spdk_bs_free_cluster_count(bs);
+	used_md_pages = spdk_bit_array_count_set(bs->used_md_pages);
+	write_zeroes_bytes = g_dev_write_zeroes_bytes;
+
+	/* Copy-on-write cluster 1 on thread 1, up to the insert on the md thread. */
+	set_thread(1);
+	channel1 = spdk_bs_alloc_io_channel(bs);
+	SPDK_CU_ASSERT_FATAL(channel1 != NULL);
+	memset(payload, 0x33, sizeof(payload));
+	spdk_blob_io_write(blob, channel1, payload, io_unit1, 1, blob_op_complete, &write_rc);
+	poll_thread(1);
+	set_thread(0);
+	CU_ASSERT(write_rc == INT_MIN);
+	CU_ASSERT(blob->active.clusters[1] == 0);
+
+	/* The insert finds the extent table replaced, and returns -EAGAIN. */
+	blob->active.extent_pages[0] = 0;
+	poll_thread(0);
+	blob->active.extent_pages[0] = extent_page;
+	CU_ASSERT(blob->active.clusters[1] == 0);
+	CU_ASSERT(write_rc == INT_MIN);
+
+	/* The discarded cluster is cleared and released, and the write retried. */
+	poll_threads();
+	CU_ASSERT(write_rc == 0);
+	CU_ASSERT(blob->active.clusters[1] != 0);
+	CU_ASSERT(blob->active.extent_pages[0] == extent_page);
+	CU_ASSERT(g_dev_write_zeroes_bytes - write_zeroes_bytes == bs->cluster_sz);
+	CU_ASSERT(spdk_bs_free_cluster_count(bs) == free_clusters - 1);
+	CU_ASSERT(spdk_bit_array_count_set(bs->used_md_pages) == used_md_pages);
+	ut_eagain_read_check(blob, channel, io_unit1, 0x33);
+	ut_eagain_read_check(blob, channel, io_unit1 + 1, 0x11);
+
+	set_thread(1);
+	spdk_bs_free_io_channel(channel1);
+	poll_threads();
+	set_thread(0);
+	spdk_bs_free_io_channel(channel);
+	poll_threads();
+	spdk_blob_close(blob, blob_op_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+
+	ut_bs_reload(&bs, NULL);
+
+	spdk_bs_open_blob(bs, blobid, blob_op_with_handle_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+	SPDK_CU_ASSERT_FATAL(g_blob != NULL);
+	blob = g_blob;
+	CU_ASSERT(blob->active.num_allocated_clusters == 2);
+	channel = spdk_bs_alloc_io_channel(bs);
+	SPDK_CU_ASSERT_FATAL(channel != NULL);
+	ut_eagain_read_check(blob, channel, 0, 0x22);
+	ut_eagain_read_check(blob, channel, io_unit1, 0x33);
+	ut_eagain_read_check(blob, channel, io_unit1 + 1, 0x11);
+	spdk_bs_free_io_channel(channel);
+	poll_threads();
+	ut_blob_close_and_delete(bs, blob);
+
+	spdk_bs_open_blob(bs, snapshotid, blob_op_with_handle_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+	SPDK_CU_ASSERT_FATAL(g_blob != NULL);
+	snapshot = g_blob;
+	ut_blob_close_and_delete(bs, snapshot);
+}
+
+static void
 blob_thin_prov_rw(void)
 {
 	static const uint8_t zero[10 * BLOCKLEN] = { 0 };
@@ -11821,6 +11957,7 @@ main(int argc, char **argv)
 		CU_ADD_TEST(suite_bs, blob_thin_prov_alloc);
 		CU_ADD_TEST(suite_bs, blob_insert_cluster_msg_test);
 		CU_ADD_TEST(suite_bs, blob_insert_cluster_msg_snapshot_race);
+		CU_ADD_TEST(suite_bs, blob_insert_cluster_eagain_retry);
 		CU_ADD_TEST(suite_bs, blob_thin_prov_rw);
 		CU_ADD_TEST(suite_bs, blob_out_of_clusters_warn_once);
 		CU_ADD_TEST(suite_bs, blob_out_of_md_pages_warn_once);
