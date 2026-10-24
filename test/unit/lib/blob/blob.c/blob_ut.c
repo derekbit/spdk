@@ -6861,6 +6861,93 @@ cleanup:
 	CU_ASSERT(spdk_bs_free_cluster_count(bs) == free_clusters_start - leaked);
 }
 
+/*
+ * Another channel unmaps a cluster while its allocation writes a new extent
+ * page. The unmap sees the cluster in the cluster map, but the extent page slot
+ * is still empty. Cluster operations on the extent page are serialized, so the
+ * release of the cluster runs once the extent page is in place, and updates it.
+ */
+static void
+blob_unmap_during_new_extent_page_write(void)
+{
+	struct spdk_blob_store *bs = g_bs;
+	struct spdk_blob *blob;
+	struct spdk_blob_opts opts;
+	struct spdk_io_channel *channel, *channel1;
+	uint8_t payload[BLOCKLEN];
+	spdk_blob_id blobid;
+	uint64_t free_clusters;
+	int write_rc = INT_MIN, unmap_rc = INT_MIN;
+
+	if (!g_use_extent_table) {
+		return;
+	}
+
+	ut_spdk_blob_opts_init(&opts);
+	opts.thin_provision = true;
+	opts.num_clusters = 4;
+	blob = ut_blob_create_and_open(bs, &opts);
+	blobid = spdk_blob_get_id(blob);
+	free_clusters = spdk_bs_free_cluster_count(bs);
+	channel = spdk_bs_alloc_io_channel(bs);
+	SPDK_CU_ASSERT_FATAL(channel != NULL);
+
+	/* Hold the new extent page write of the allocation of cluster 0. */
+	ut_md_write_hold_arm(bs);
+	memset(payload, 0xAA, sizeof(payload));
+	spdk_blob_io_write(blob, channel, payload, 0, 1, blob_op_complete, &write_rc);
+	poll_threads();
+	SPDK_CU_ASSERT_FATAL(g_ut_md_write_hold.held);
+	CU_ASSERT(blob->active.clusters[0] != 0);
+	CU_ASSERT(blob->active.extent_pages[0] == 0);
+
+	/* Unmap the whole cluster from another channel. */
+	set_thread(1);
+	channel1 = spdk_bs_alloc_io_channel(bs);
+	SPDK_CU_ASSERT_FATAL(channel1 != NULL);
+	spdk_blob_io_unmap(blob, channel1, 0, bs_io_units_per_cluster(blob), blob_op_complete, &unmap_rc);
+	set_thread(0);
+	poll_threads();
+	CU_ASSERT(unmap_rc == INT_MIN);
+
+	ut_md_write_hold_release();
+	poll_threads();
+	CU_ASSERT(unmap_rc == 0);
+	CU_ASSERT(write_rc == 0);
+	/* The write was re-executed after the unmap released the cluster, and
+	 * allocated it again. */
+	CU_ASSERT(blob->active.clusters[0] != 0);
+	CU_ASSERT(blob->active.extent_pages[0] != 0);
+	CU_ASSERT(blob->active.num_allocated_clusters == 1);
+	CU_ASSERT(spdk_bs_free_cluster_count(bs) == free_clusters - 1);
+
+	set_thread(1);
+	spdk_bs_free_io_channel(channel1);
+	poll_threads();
+	set_thread(0);
+	spdk_bs_free_io_channel(channel);
+	poll_threads();
+	spdk_blob_close(blob, blob_op_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+
+	ut_bs_reload(&bs, NULL);
+	CU_ASSERT(spdk_bs_free_cluster_count(bs) == free_clusters - 1);
+	spdk_bs_open_blob(bs, blobid, blob_op_with_handle_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+	SPDK_CU_ASSERT_FATAL(g_blob != NULL);
+	blob = g_blob;
+	CU_ASSERT(blob->active.num_allocated_clusters == 1);
+	channel = spdk_bs_alloc_io_channel(bs);
+	SPDK_CU_ASSERT_FATAL(channel != NULL);
+	ut_blob_read_check(blob, channel, 0, 0xAA);
+	spdk_bs_free_io_channel(channel);
+	poll_threads();
+	ut_blob_close_and_delete(bs, blob);
+	CU_ASSERT(spdk_bs_free_cluster_count(bs) == free_clusters);
+}
+
 static void
 blob_thin_prov_rw(void)
 {
@@ -13832,6 +13919,7 @@ main(int argc, char **argv)
 		CU_ADD_TEST(suite_bs, blob_insert_cluster_sync_failure_with_pending_sync);
 		CU_ADD_TEST(suite_bs, blob_insert_cluster_md_failure_after_other_write);
 		CU_ADD_TEST(suite_bs, blob_insert_cluster_ep_failure_after_resize_persist);
+		CU_ADD_TEST(suite_bs, blob_unmap_during_new_extent_page_write);
 		CU_ADD_TEST(suite_bs, blob_thin_prov_rw);
 		CU_ADD_TEST(suite_bs, blob_out_of_clusters_warn_once);
 		CU_ADD_TEST(suite_bs, blob_out_of_md_pages_warn_once);

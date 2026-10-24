@@ -10440,8 +10440,12 @@ blob_free_cluster_msg(void *arg)
 
 	extent_page = bs_cluster_to_extent_page(ctx->blob, ctx->cluster_num);
 
-	/* There shouldn't be parallel release operations on same cluster */
-	assert(*extent_page == ctx->extent_page);
+	/* There shouldn't be parallel release operations on same cluster. The
+	 * unmap may have been submitted while the insert of the cluster was
+	 * writing a new extent page, before it was put in the extent table: cluster
+	 * operations on the extent page are serialized, so it is in place now. */
+	assert(*extent_page == ctx->extent_page || ctx->extent_page == 0);
+	assert(*extent_page != 0);
 
 	blob_write_extent_page(ctx->blob, *extent_page, ctx->cluster_num, ctx->page,
 			       blob_free_cluster_update_ep_cb, ctx);
