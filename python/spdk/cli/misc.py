@@ -218,6 +218,13 @@ def add_parser(subparsers):
         'env_dpdk_get_mem_stats', help='write the dpdk memory stats to a file.')
     p.set_defaults(func=env_dpdk_get_mem_stats)
 
+    def env_dpdk_get_mem_usage(args):
+        print_dict(args.client.env_dpdk_get_mem_usage())
+
+    p = subparsers.add_parser(
+        'env_dpdk_get_mem_usage', help='Display the usage of the DPDK heaps, mempools and memzones.')
+    p.set_defaults(func=env_dpdk_get_mem_usage)
+
     def framework_get_pci_devices(args):
         def splitbuf(buf, step):
             return [buf[i:i+step] for i in range(0, len(buf), step)]

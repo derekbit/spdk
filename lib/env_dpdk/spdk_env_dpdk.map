@@ -132,6 +132,8 @@
 	spdk_env_dpdk_external_init;
 	spdk_env_dpdk_dump_mem_stats;
 	spdk_env_dpdk_get_mem_stats;
+	spdk_env_dpdk_foreach_mempool;
+	spdk_env_dpdk_foreach_memzone;
 
 	local: *;
 };

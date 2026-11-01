@@ -922,6 +922,10 @@
       "params": []
     },
     {
+      "name": "env_dpdk_get_mem_usage",
+      "params": []
+    },
+    {
       "name": "accel_get_module_info",
       "params": []
     },
@@ -6752,6 +6756,10 @@
     },
     {
       "name": "iobuf_get_stats",
+      "params": []
+    },
+    {
+      "name": "iobuf_get_usage",
       "params": []
     },
     {

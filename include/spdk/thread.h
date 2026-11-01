@@ -1322,6 +1322,77 @@ typedef void (*spdk_iobuf_get_stats_cb)(struct spdk_iobuf_module_stats *modules,
  */
 int spdk_iobuf_get_stats(spdk_iobuf_get_stats_cb cb_fn, void *cb_arg);
 
+#define SPDK_IOBUF_THREAD_NAME_MAX 128
+#define SPDK_IOBUF_MODULE_NAME_MAX 64
+
+/** Usage of one iobuf pool (small or large) of a NUMA node. */
+struct spdk_iobuf_pool_usage {
+	/** Number of buffers in the pool */
+	uint64_t count;
+	/** Number of buffers in the shared ring, not held by a thread cache or by a user */
+	uint64_t free;
+	/** Size of a buffer in bytes */
+	uint32_t bufsize;
+};
+
+/** Usage of the iobuf pools of a NUMA node. */
+struct spdk_iobuf_node_usage {
+	int32_t				numa_id;
+	struct spdk_iobuf_pool_usage	small_pool;
+	struct spdk_iobuf_pool_usage	large_pool;
+};
+
+/** Usage of one pool by the channel of a module on a thread. */
+struct spdk_iobuf_channel_pool_usage {
+	/** Configured size of the per-thread cache */
+	uint32_t cache_size;
+	/** Number of buffers in the per-thread cache now */
+	uint32_t cache_count;
+	/** Number of requests waiting for a buffer now */
+	uint32_t queued;
+	/** Number of buffers got from the per-thread cache */
+	uint64_t cache;
+	/** Number of buffers got from the shared ring */
+	uint64_t main;
+	/** Number of requests that had to wait for a buffer */
+	uint64_t retry;
+};
+
+/** Usage of the iobuf pools by the channel of a module on a thread. */
+struct spdk_iobuf_channel_usage {
+	/** Name of the module, copied because a module can be unregistered while the usage is gathered */
+	char					module[SPDK_IOBUF_MODULE_NAME_MAX];
+	char					thread_name[SPDK_IOBUF_THREAD_NAME_MAX];
+	uint64_t				thread_id;
+	struct spdk_iobuf_channel_pool_usage	small_pool;
+	struct spdk_iobuf_channel_pool_usage	large_pool;
+};
+
+struct spdk_iobuf_usage {
+	struct spdk_iobuf_node_usage		*nodes;
+	uint32_t				num_nodes;
+	struct spdk_iobuf_channel_usage		*channels;
+	uint32_t				num_channels;
+};
+
+typedef void (*spdk_iobuf_get_usage_cb)(int status, const struct spdk_iobuf_usage *usage,
+					void *cb_arg);
+
+/**
+ * Get the current usage of the iobuf pools: the size and the free buffers of each pool, and for
+ * each module on each thread the buffers in its cache and the requests waiting for a buffer. A
+ * buffer that is in none of the shared ring and the caches is held by a user.
+ *
+ * The values are read one thread at a time, so they are not a consistent snapshot.
+ *
+ * \param cb_fn Callback to be executed once the usage is gathered, with a negative errno and a NULL
+ * usage on failure. The usage is only valid during the call.
+ * \param cb_arg Argument passed to the callback function.
+ *
+ * \return 0 on success, negative errno otherwise.
+ */
+int spdk_iobuf_get_usage(spdk_iobuf_get_usage_cb cb_fn, void *cb_arg);
+
 typedef void (*spdk_post_poller_fn)(void *fn_arg);
 
 /**

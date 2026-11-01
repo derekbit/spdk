@@ -933,3 +933,138 @@ spdk_iobuf_get_stats(spdk_iobuf_get_stats_cb cb_fn, void *cb_arg)
 			      iobuf_get_channel_stats_done);
 	return 0;
 }
+
+struct iobuf_get_usage_ctx {
+	struct spdk_iobuf_usage		usage;
+	uint32_t			channels_capacity;
+	int				rc;
+	spdk_iobuf_get_usage_cb		cb_fn;
+	void				*cb_arg;
+};
+
+static void
+iobuf_get_channel_usage_done(struct spdk_io_channel_iter *iter, int status)
+{
+	struct iobuf_get_usage_ctx *ctx = spdk_io_channel_iter_get_ctx(iter);
+	struct spdk_iobuf_node_usage *node_usage;
+	int32_t i;
+
+	/* The pools are read last, so that the buffers that threads released while the channels were
+	 * visited are in the shared ring and not counted as used. */
+	ctx->usage.nodes = calloc(SPDK_CONFIG_MAX_NUMA_NODES, sizeof(*ctx->usage.nodes));
+	if (ctx->usage.nodes == NULL) {
+		ctx->rc = -ENOMEM;
+	} else {
+		IOBUF_FOREACH_NUMA_ID(i) {
+			struct iobuf_node *node = &g_iobuf.node[i];
+
+			if (node->small_pool == NULL || node->large_pool == NULL) {
+				continue;
+			}
+
+			node_usage = &ctx->usage.nodes[ctx->usage.num_nodes++];
+			node_usage->numa_id = i;
+			node_usage->small_pool.count = g_iobuf.opts.small_pool_count;
+			node_usage->small_pool.free = spdk_ring_count(node->small_pool);
+			node_usage->small_pool.bufsize = g_iobuf.opts.small_bufsize;
+			node_usage->large_pool.count = g_iobuf.opts.large_pool_count;
+			node_usage->large_pool.free = spdk_ring_count(node->large_pool);
+			node_usage->large_pool.bufsize = g_iobuf.opts.large_bufsize;
+		}
+	}
+
+	ctx->cb_fn(ctx->rc, ctx->rc == 0 ? &ctx->usage : NULL, ctx->cb_arg);
+
+	free(ctx->usage.nodes);
+	free(ctx->usage.channels);
+	free(ctx);
+}
+
+static void
+iobuf_pool_cache_usage(struct spdk_iobuf_channel *channel, bool large,
+		       struct spdk_iobuf_channel_pool_usage *out)
+{
+	struct spdk_iobuf_pool_cache *cache;
+	struct spdk_iobuf_entry *entry;
+	int32_t i;
+
+	IOBUF_FOREACH_NUMA_ID(i) {
+		cache = large ? &channel->cache[i].large : &channel->cache[i].small;
+
+		out->cache_size += cache->cache_size;
+		out->cache_count += cache->cache_count;
+		out->cache += cache->stats.cache;
+		out->main += cache->stats.main;
+		out->retry += cache->stats.retry;
+
+		/* The wait queue is shared by all the modules of the thread, so count only the entries of this one. */
+		if (cache->queue != NULL) {
+			STAILQ_FOREACH(entry, cache->queue, stailq) {
+				if (entry->module == channel->module) {
+					out->queued++;
+				}
+			}
+		}
+	}
+}
+
+static void
+iobuf_get_channel_usage(struct spdk_io_channel_iter *iter)
+{
+	struct iobuf_get_usage_ctx *ctx = spdk_io_channel_iter_get_ctx(iter);
+	struct spdk_io_channel *ch = spdk_io_channel_iter_get_channel(iter);
+	struct iobuf_channel *iobuf_ch = spdk_io_channel_get_ctx(ch);
+	struct spdk_thread *thread = spdk_get_thread();
+	struct spdk_iobuf_channel *channel;
+	struct spdk_iobuf_channel_usage *out;
+	struct iobuf_module *module;
+	uint32_t i;
+
+	for (i = 0; i < IOBUF_MAX_CHANNELS && ctx->rc == 0; ++i) {
+		channel = iobuf_ch->channels[i];
+		if (channel == NULL) {
+			continue;
+		}
+
+		if (ctx->usage.num_channels == ctx->channels_capacity) {
+			struct spdk_iobuf_channel_usage *tmp;
+			uint32_t capacity = ctx->channels_capacity ? ctx->channels_capacity * 2 : 32;
+
+			tmp = realloc(ctx->usage.channels, capacity * sizeof(*tmp));
+			if (tmp == NULL) {
+				ctx->rc = -ENOMEM;
+				break;
+			}
+			ctx->usage.channels = tmp;
+			ctx->channels_capacity = capacity;
+		}
+
+		module = (struct iobuf_module *)channel->module;
+		out = &ctx->usage.channels[ctx->usage.num_channels++];
+		memset(out, 0, sizeof(*out));
+		snprintf(out->module, sizeof(out->module), "%s", module->name);
+		snprintf(out->thread_name, sizeof(out->thread_name), "%s", spdk_thread_get_name(thread));
+		out->thread_id = spdk_thread_get_id(thread);
+		iobuf_pool_cache_usage(channel, false, &out->small_pool);
+		iobuf_pool_cache_usage(channel, true, &out->large_pool);
+	}
+
+	spdk_for_each_channel_continue(iter, ctx->rc);
+}
+
+int
+spdk_iobuf_get_usage(spdk_iobuf_get_usage_cb cb_fn, void *cb_arg)
+{
+	struct iobuf_get_usage_ctx *ctx;
+
+	ctx = calloc(1, sizeof(*ctx));
+	if (ctx == NULL) {
+		return -ENOMEM;
+	}
+
+	ctx->cb_fn = cb_fn;
+	ctx->cb_arg = cb_arg;
+
+	spdk_for_each_channel(&g_iobuf, iobuf_get_channel_usage, ctx, iobuf_get_channel_usage_done);
+	return 0;
+}

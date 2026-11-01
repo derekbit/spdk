@@ -104,3 +104,89 @@ rpc_iobuf_get_stats(struct spdk_jsonrpc_request *request, const struct spdk_json
 	}
 }
 SPDK_RPC_REGISTER("iobuf_get_stats", rpc_iobuf_get_stats, SPDK_RPC_RUNTIME)
+
+static void
+rpc_iobuf_write_pool_usage(struct spdk_json_write_ctx *w, const char *name,
+			   const struct spdk_iobuf_pool_usage *pool)
+{
+	spdk_json_write_named_object_begin(w, name);
+	spdk_json_write_named_uint64(w, "count", pool->count);
+	spdk_json_write_named_uint64(w, "free", pool->free);
+	spdk_json_write_named_uint32(w, "bufsize", pool->bufsize);
+	spdk_json_write_object_end(w);
+}
+
+static void
+rpc_iobuf_write_channel_pool_usage(struct spdk_json_write_ctx *w, const char *name,
+				   const struct spdk_iobuf_channel_pool_usage *pool)
+{
+	spdk_json_write_named_object_begin(w, name);
+	spdk_json_write_named_uint32(w, "cache_size", pool->cache_size);
+	spdk_json_write_named_uint32(w, "cache_count", pool->cache_count);
+	spdk_json_write_named_uint32(w, "queued", pool->queued);
+	spdk_json_write_named_uint64(w, "cache", pool->cache);
+	spdk_json_write_named_uint64(w, "main", pool->main);
+	spdk_json_write_named_uint64(w, "retry", pool->retry);
+	spdk_json_write_object_end(w);
+}
+
+static void
+rpc_iobuf_get_usage_done(int status, const struct spdk_iobuf_usage *usage, void *cb_arg)
+{
+	struct spdk_jsonrpc_request *request = cb_arg;
+	struct spdk_json_write_ctx *w;
+	uint32_t i;
+
+	if (status != 0) {
+		spdk_jsonrpc_send_error_response(request, status, spdk_strerror(-status));
+		return;
+	}
+
+	w = spdk_jsonrpc_begin_result(request);
+	spdk_json_write_object_begin(w);
+
+	spdk_json_write_named_array_begin(w, "pools");
+	for (i = 0; i < usage->num_nodes; ++i) {
+		spdk_json_write_object_begin(w);
+		spdk_json_write_named_int32(w, "numa_id", usage->nodes[i].numa_id);
+		rpc_iobuf_write_pool_usage(w, "small_pool", &usage->nodes[i].small_pool);
+		rpc_iobuf_write_pool_usage(w, "large_pool", &usage->nodes[i].large_pool);
+		spdk_json_write_object_end(w);
+	}
+	spdk_json_write_array_end(w);
+
+	spdk_json_write_named_array_begin(w, "channels");
+	for (i = 0; i < usage->num_channels; ++i) {
+		const struct spdk_iobuf_channel_usage *ch = &usage->channels[i];
+
+		spdk_json_write_object_begin(w);
+		spdk_json_write_named_string(w, "module", ch->module);
+		spdk_json_write_named_string(w, "thread", ch->thread_name);
+		spdk_json_write_named_uint64(w, "thread_id", ch->thread_id);
+		rpc_iobuf_write_channel_pool_usage(w, "small_pool", &ch->small_pool);
+		rpc_iobuf_write_channel_pool_usage(w, "large_pool", &ch->large_pool);
+		spdk_json_write_object_end(w);
+	}
+	spdk_json_write_array_end(w);
+
+	spdk_json_write_object_end(w);
+	spdk_jsonrpc_end_result(request, w);
+}
+
+static void
+rpc_iobuf_get_usage(struct spdk_jsonrpc_request *request, const struct spdk_json_val *params)
+{
+	int rc;
+
+	if (params != NULL) {
+		spdk_jsonrpc_send_error_response(request, SPDK_JSONRPC_ERROR_INVALID_PARAMS,
+						 "iobuf_get_usage doesn't accept any parameters.");
+		return;
+	}
+
+	rc = spdk_iobuf_get_usage(rpc_iobuf_get_usage_done, request);
+	if (rc != 0) {
+		spdk_jsonrpc_send_error_response(request, rc, spdk_strerror(-rc));
+	}
+}
+SPDK_RPC_REGISTER("iobuf_get_usage", rpc_iobuf_get_usage, SPDK_RPC_RUNTIME)

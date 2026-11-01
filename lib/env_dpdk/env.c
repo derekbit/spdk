@@ -487,6 +487,62 @@ spdk_env_dpdk_get_mem_stats(struct spdk_env_dpdk_mem_stats *stats, uint32_t numa
 	return 0;
 }
 
+struct mempool_walk_ctx {
+	spdk_env_dpdk_mempool_fn	fn;
+	void				*ctx;
+};
+
+static void
+mempool_walk_cb(struct rte_mempool *mp, void *arg)
+{
+	struct mempool_walk_ctx *walk = arg;
+	struct spdk_env_dpdk_mempool_info info = {};
+
+	snprintf(info.name, sizeof(info.name), "%s", mp->name);
+	info.numa_id = mp->socket_id;
+	info.size = mp->size;
+	info.cache_size = mp->cache_size;
+	info.object_size = mp->header_size + mp->elt_size + mp->trailer_size;
+	info.available = rte_mempool_avail_count(mp);
+	info.in_use = info.size > info.available ? info.size - info.available : 0;
+
+	walk->fn(&info, walk->ctx);
+}
+
+void
+spdk_env_dpdk_foreach_mempool(spdk_env_dpdk_mempool_fn fn, void *ctx)
+{
+	struct mempool_walk_ctx walk = { .fn = fn, .ctx = ctx };
+
+	rte_mempool_walk(mempool_walk_cb, &walk);
+}
+
+struct memzone_walk_ctx {
+	spdk_env_dpdk_memzone_fn	fn;
+	void				*ctx;
+};
+
+static void
+memzone_walk_cb(const struct rte_memzone *mz, void *arg)
+{
+	struct memzone_walk_ctx *walk = arg;
+	struct spdk_env_dpdk_memzone_info info = {};
+
+	snprintf(info.name, sizeof(info.name), "%s", mz->name);
+	info.numa_id = mz->socket_id;
+	info.length = mz->len;
+
+	walk->fn(&info, walk->ctx);
+}
+
+void
+spdk_env_dpdk_foreach_memzone(spdk_env_dpdk_memzone_fn fn, void *ctx)
+{
+	struct memzone_walk_ctx walk = { .fn = fn, .ctx = ctx };
+
+	rte_memzone_walk(memzone_walk_cb, &walk);
+}
+
 int
 spdk_get_tid(void)
 {

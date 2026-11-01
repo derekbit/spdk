@@ -32,3 +32,9 @@ def add_parser(subparsers):
 
     p = subparsers.add_parser('iobuf_get_stats', help='Display iobuf statistics')
     p.set_defaults(func=iobuf_get_stats)
+
+    def iobuf_get_usage(args):
+        print_dict(args.client.iobuf_get_usage())
+
+    p = subparsers.add_parser('iobuf_get_usage', help='Display the usage of the iobuf pools and per-thread caches')
+    p.set_defaults(func=iobuf_get_usage)

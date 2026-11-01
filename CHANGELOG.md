@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+### env_dpdk
+
+Added `spdk_env_dpdk_foreach_mempool()` and `spdk_env_dpdk_foreach_memzone()` to walk the DPDK mempools
+with their free and used objects, and the DPDK memzones.
+
+Added the `env_dpdk_get_mem_usage` RPC. It returns the heap of each NUMA node (total, allocated, free
+and the largest free block), every mempool with its used objects, and every memzone, as JSON. The
+existing `env_dpdk_get_mem_stats` RPC only writes a text file.
+
+### thread
+
+Added `spdk_iobuf_get_usage()` and the `iobuf_get_usage` RPC to read the current usage of the iobuf pools:
+the free buffers of each shared pool, and for each module on each thread the buffers in its cache and the
+requests waiting for a buffer. `iobuf_get_stats` only has cumulative counters.
+
+### spdk_top
+
+Added the IOBUF and MEMORY tabs. IOBUF shows the shared iobuf pools (free and in use buffers) and the per-thread
+caches with the waiting requests, the retries and the retries per second. MEMORY shows the hugepage heap, the
+mempools and the memzones. They need the `iobuf_get_usage` and `env_dpdk_get_mem_usage` RPCs of the target.
+
 ## v26.05
 
 ### accel

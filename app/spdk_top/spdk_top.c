@@ -58,6 +58,17 @@
 #define MAX_POLLER_IND_STR_LEN 28
 #define MAX_CORE_MASK_STR_LEN 16
 #define MAX_CORE_STR_LEN 6
+#define MAX_IOBUF_MODULE_LEN 12
+#define MAX_IOBUF_POOL_LEN 7
+#define MAX_COUNT_STR_LEN 10
+#define MAX_COUNTER_STR_LEN 14
+#define MAX_MEM_TYPE_LEN 9
+#define MAX_MEM_NAME_LEN 34
+#define MAX_MIB_STR_LEN 13
+#define RPC_MAX_IOBUF_NODES 16
+#define RPC_MAX_IOBUF_CHANNELS 1024
+#define RPC_MAX_MEM_HEAPS 16
+#define RPC_MAX_MEM_ROWS 2048
 #define MAX_CORE_FREQ_STR_LEN 13
 #define MAX_TIME_STR_LEN 12
 #define MAX_FLOAT_STR_LEN 8
@@ -86,6 +97,8 @@ enum tabs {
 	THREADS_TAB,
 	POLLERS_TAB,
 	CORES_TAB,
+	IOBUF_TAB,
+	MEMORY_TAB,
 	NUMBER_OF_TABS,
 };
 
@@ -128,6 +141,36 @@ enum column_cores_type {
 	COL_CORES_NONE = 255,
 };
 
+enum column_iobuf_type {
+	COL_IOBUF_MODULE,
+	COL_IOBUF_THREAD,
+	COL_IOBUF_POOL,
+	COL_IOBUF_SIZE,
+	COL_IOBUF_FREE,
+	COL_IOBUF_IN_USE,
+	COL_IOBUF_USED_PCT,
+	COL_IOBUF_WAITING,
+	COL_IOBUF_CACHE_GETS,
+	COL_IOBUF_MAIN_GETS,
+	COL_IOBUF_RETRIES,
+	COL_IOBUF_RETRY_RATE,
+	COL_IOBUF_NONE = 255,
+};
+
+enum column_memory_type {
+	COL_MEM_TYPE,
+	COL_MEM_NAME,
+	COL_MEM_NUMA,
+	COL_MEM_TOTAL,
+	COL_MEM_USED,
+	COL_MEM_FREE,
+	COL_MEM_USED_PCT,
+	COL_MEM_OBJECTS,
+	COL_MEM_IN_USE,
+	COL_MEM_LARGEST_FREE,
+	COL_MEM_NONE = 255,
+};
+
 enum spdk_poller_type {
 	SPDK_ACTIVE_POLLER,
 	SPDK_TIMED_POLLER,
@@ -155,7 +198,7 @@ uint16_t g_selected_row;
 uint16_t g_max_selected_row;
 uint64_t g_tick_rate;
 const char *poller_type_str[SPDK_POLLER_TYPES_COUNT] = {"Active", "Timed", "Paused"};
-const char *g_tab_title[NUMBER_OF_TABS] = {"[1] THREADS", "[2] POLLERS", "[3] CORES"};
+const char *g_tab_title[NUMBER_OF_TABS] = {"[1] THREADS", "[2] POLLERS", "[3] CORES", "[4] IOBUF", "[5] MEMORY"};
 struct spdk_jsonrpc_client *g_rpc_client;
 static TAILQ_HEAD(, run_counter_history) g_run_counter_history = TAILQ_HEAD_INITIALIZER(
 			g_run_counter_history);
@@ -164,8 +207,11 @@ PANEL *g_panels[NUMBER_OF_TABS];
 uint16_t g_max_row, g_max_col;
 uint16_t g_data_win_size, g_max_data_rows;
 uint32_t g_last_threads_count, g_last_pollers_count, g_last_cores_count;
-uint8_t g_current_sort_col[NUMBER_OF_TABS] = {COL_THREADS_NAME, COL_POLLERS_NAME, COL_CORES_CORE};
-uint8_t g_current_sort_col2[NUMBER_OF_TABS] = {COL_THREADS_NONE, COL_POLLERS_NONE, COL_CORES_NONE};
+uint32_t g_last_iobuf_count, g_last_mem_count;
+/* The tab on display, so that the data thread polls the memory RPCs only when they are shown. */
+volatile uint8_t g_active_tab = THREADS_TAB;
+uint8_t g_current_sort_col[NUMBER_OF_TABS] = {COL_THREADS_NAME, COL_POLLERS_NAME, COL_CORES_CORE, COL_IOBUF_MODULE, COL_MEM_TYPE};
+uint8_t g_current_sort_col2[NUMBER_OF_TABS] = {COL_THREADS_NONE, COL_POLLERS_NONE, COL_CORES_NONE, COL_IOBUF_NONE, COL_MEM_NONE};
 bool g_interval_data = true;
 bool g_quit_app = false;
 pthread_mutex_t g_thread_lock;
@@ -201,6 +247,32 @@ static struct col_desc g_col_desc[NUMBER_OF_TABS][TABS_COL_COUNT] = {
 		{.name = "Irq %", .max_data_string = MAX_FLOAT_STR_LEN},
 		{.name = "CPU %", .max_data_string = MAX_FLOAT_STR_LEN},
 		{.name = "Freq [MHz]", .max_data_string = MAX_CORE_FREQ_STR_LEN},
+		{.name = (char *)NULL}
+	},
+	{	{.name = "Module", .max_data_string = MAX_IOBUF_MODULE_LEN},
+		{.name = "Thread", .max_data_string = MAX_THREAD_NAME_LEN},
+		{.name = "Pool", .max_data_string = MAX_IOBUF_POOL_LEN},
+		{.name = "Size", .max_data_string = MAX_COUNT_STR_LEN},
+		{.name = "Free/Cached", .max_data_string = MAX_COUNT_STR_LEN + 2},
+		{.name = "In use", .max_data_string = MAX_COUNT_STR_LEN},
+		{.name = "Used %", .max_data_string = MAX_FLOAT_STR_LEN},
+		{.name = "Waiting", .max_data_string = MAX_COUNT_STR_LEN},
+		{.name = "Cache gets", .max_data_string = MAX_COUNTER_STR_LEN},
+		{.name = "Main gets", .max_data_string = MAX_COUNTER_STR_LEN},
+		{.name = "Retries", .max_data_string = MAX_COUNTER_STR_LEN},
+		{.name = "Retry/s", .max_data_string = MAX_FLOAT_STR_LEN + 2},
+		{.name = (char *)NULL}
+	},
+	{	{.name = "Type", .max_data_string = MAX_MEM_TYPE_LEN},
+		{.name = "Name", .max_data_string = MAX_MEM_NAME_LEN},
+		{.name = "NUMA", .max_data_string = MAX_CORE_STR_LEN},
+		{.name = "Total [MiB]", .max_data_string = MAX_MIB_STR_LEN},
+		{.name = "Used [MiB]", .max_data_string = MAX_MIB_STR_LEN},
+		{.name = "Free [MiB]", .max_data_string = MAX_MIB_STR_LEN},
+		{.name = "Used %", .max_data_string = MAX_FLOAT_STR_LEN},
+		{.name = "Objects", .max_data_string = MAX_COUNT_STR_LEN},
+		{.name = "In use", .max_data_string = MAX_COUNT_STR_LEN},
+		{.name = "Largest free [MiB]", .max_data_string = MAX_MIB_STR_LEN + 8},
 		{.name = (char *)NULL}
 	}
 };
@@ -274,6 +346,48 @@ struct rpc_thread_info g_threads_info[RPC_MAX_THREADS];
 struct rpc_poller_info g_pollers_info[RPC_MAX_POLLERS];
 struct rpc_core_info g_cores_info[RPC_MAX_CORES];
 struct rpc_scheduler g_scheduler_info;
+
+/* One row of the IOBUF tab: a shared pool of a NUMA node, or the cache of a module on a thread. */
+struct iobuf_row {
+	char module[MAX_IOBUF_MODULE_LEN + 1];
+	char thread[MAX_THREAD_NAME + 1];
+	uint64_t thread_id;
+	bool shared;
+	bool large;
+	/* The pool size of a shared row, the configured cache size of a thread row. */
+	uint64_t size;
+	/* The buffers in the shared ring, or in the cache of a thread. */
+	uint64_t free;
+	/* The buffers held by users. Only known for a shared row of a single NUMA node pool. */
+	uint64_t in_use;
+	bool in_use_known;
+	uint64_t waiting;
+	uint64_t cache_gets;
+	uint64_t main_gets;
+	uint64_t retries;
+	double retry_rate;
+};
+
+/* One row of the MEMORY tab: a heap, a mempool or a memzone. */
+struct mem_row {
+	char type[MAX_MEM_TYPE_LEN + 1];
+	char name[MAX_MEM_NAME_LEN + 1];
+	int32_t numa_id;
+	uint64_t total;
+	uint64_t used;
+	uint64_t free;
+	bool usage_known;
+	uint64_t objects;
+	uint64_t in_use;
+	bool objects_known;
+	bool in_use_known;
+	uint64_t largest_free;
+	bool largest_free_known;
+};
+
+struct iobuf_row g_iobuf_rows[RPC_MAX_IOBUF_CHANNELS * 2 + RPC_MAX_IOBUF_NODES * 2];
+struct mem_row g_mem_rows[RPC_MAX_MEM_ROWS];
+struct timespec g_iobuf_last_time;
 
 static void
 init_str_len(void)
@@ -1135,6 +1249,575 @@ enum str_alignment {
 	ALIGN_RIGHT,
 };
 
+struct rpc_iobuf_pool {
+	uint64_t count;
+	uint64_t free;
+	uint32_t bufsize;
+};
+
+struct rpc_iobuf_node {
+	int32_t numa_id;
+	struct rpc_iobuf_pool small_pool;
+	struct rpc_iobuf_pool large_pool;
+};
+
+struct rpc_iobuf_channel_pool {
+	uint32_t cache_size;
+	uint32_t cache_count;
+	uint32_t queued;
+	uint64_t cache;
+	uint64_t main;
+	uint64_t retry;
+};
+
+struct rpc_iobuf_channel {
+	char *module;
+	char *thread;
+	uint64_t thread_id;
+	struct rpc_iobuf_channel_pool small_pool;
+	struct rpc_iobuf_channel_pool large_pool;
+};
+
+static const struct spdk_json_object_decoder rpc_iobuf_pool_decoders[] = {
+	{"count", offsetof(struct rpc_iobuf_pool, count), spdk_json_decode_uint64},
+	{"free", offsetof(struct rpc_iobuf_pool, free), spdk_json_decode_uint64},
+	{"bufsize", offsetof(struct rpc_iobuf_pool, bufsize), spdk_json_decode_uint32},
+};
+
+static int
+rpc_decode_iobuf_pool(const struct spdk_json_val *val, void *out)
+{
+	return spdk_json_decode_object_relaxed(val, rpc_iobuf_pool_decoders,
+					       SPDK_COUNTOF(rpc_iobuf_pool_decoders), out);
+}
+
+static const struct spdk_json_object_decoder rpc_iobuf_node_decoders[] = {
+	{"numa_id", offsetof(struct rpc_iobuf_node, numa_id), spdk_json_decode_int32},
+	{"small_pool", offsetof(struct rpc_iobuf_node, small_pool), rpc_decode_iobuf_pool},
+	{"large_pool", offsetof(struct rpc_iobuf_node, large_pool), rpc_decode_iobuf_pool},
+};
+
+static const struct spdk_json_object_decoder rpc_iobuf_channel_pool_decoders[] = {
+	{"cache_size", offsetof(struct rpc_iobuf_channel_pool, cache_size), spdk_json_decode_uint32},
+	{"cache_count", offsetof(struct rpc_iobuf_channel_pool, cache_count), spdk_json_decode_uint32},
+	{"queued", offsetof(struct rpc_iobuf_channel_pool, queued), spdk_json_decode_uint32},
+	{"cache", offsetof(struct rpc_iobuf_channel_pool, cache), spdk_json_decode_uint64},
+	{"main", offsetof(struct rpc_iobuf_channel_pool, main), spdk_json_decode_uint64},
+	{"retry", offsetof(struct rpc_iobuf_channel_pool, retry), spdk_json_decode_uint64},
+};
+
+static int
+rpc_decode_iobuf_channel_pool(const struct spdk_json_val *val, void *out)
+{
+	return spdk_json_decode_object_relaxed(val, rpc_iobuf_channel_pool_decoders,
+					       SPDK_COUNTOF(rpc_iobuf_channel_pool_decoders), out);
+}
+
+static const struct spdk_json_object_decoder rpc_iobuf_channel_decoders[] = {
+	{"module", offsetof(struct rpc_iobuf_channel, module), spdk_json_decode_string},
+	{"thread", offsetof(struct rpc_iobuf_channel, thread), spdk_json_decode_string},
+	{"thread_id", offsetof(struct rpc_iobuf_channel, thread_id), spdk_json_decode_uint64},
+	{"small_pool", offsetof(struct rpc_iobuf_channel, small_pool), rpc_decode_iobuf_channel_pool},
+	{"large_pool", offsetof(struct rpc_iobuf_channel, large_pool), rpc_decode_iobuf_channel_pool},
+};
+
+/* Larger first, like the other numeric columns. */
+static int
+compare_desc(uint64_t v1, uint64_t v2)
+{
+	if (v2 > v1) {
+		return 1;
+	} else if (v2 < v1) {
+		return -1;
+	}
+	return 0;
+}
+
+/* Usage in units of 0.01% for sorting and display. A row without a known usage is 0. */
+static uint64_t
+iobuf_used_pct_x100(const struct iobuf_row *row)
+{
+	if (!row->shared || !row->in_use_known || row->size == 0) {
+		return 0;
+	}
+
+	return row->in_use * 10000 / row->size;
+}
+
+static int
+subsort_iobuf(enum column_iobuf_type sort_column, const void *p1, const void *p2)
+{
+	const struct iobuf_row *r1 = p1;
+	const struct iobuf_row *r2 = p2;
+
+	switch (sort_column) {
+	case COL_IOBUF_MODULE:
+		return strcmp(r1->module, r2->module);
+	case COL_IOBUF_THREAD:
+		return strcmp(r1->thread, r2->thread);
+	case COL_IOBUF_POOL:
+		return (int)r1->large - (int)r2->large;
+	case COL_IOBUF_SIZE:
+		return compare_desc(r1->size, r2->size);
+	case COL_IOBUF_FREE:
+		return compare_desc(r1->free, r2->free);
+	case COL_IOBUF_IN_USE:
+		return compare_desc(r1->in_use_known ? r1->in_use : 0, r2->in_use_known ? r2->in_use : 0);
+	case COL_IOBUF_USED_PCT:
+		return compare_desc(iobuf_used_pct_x100(r1), iobuf_used_pct_x100(r2));
+	case COL_IOBUF_WAITING:
+		return compare_desc(r1->waiting, r2->waiting);
+	case COL_IOBUF_CACHE_GETS:
+		return compare_desc(r1->cache_gets, r2->cache_gets);
+	case COL_IOBUF_MAIN_GETS:
+		return compare_desc(r1->main_gets, r2->main_gets);
+	case COL_IOBUF_RETRIES:
+		return compare_desc(r1->retries, r2->retries);
+	case COL_IOBUF_RETRY_RATE:
+		return compare_desc((uint64_t)(r1->retry_rate * 100), (uint64_t)(r2->retry_rate * 100));
+	case COL_IOBUF_NONE:
+	default:
+		return 0;
+	}
+}
+
+static int
+sort_iobuf(const void *p1, const void *p2)
+{
+	const struct iobuf_row *r1 = p1;
+	const struct iobuf_row *r2 = p2;
+	int res;
+
+	res = subsort_iobuf(g_current_sort_col[IOBUF_TAB], p1, p2);
+	if (res == 0) {
+		res = subsort_iobuf(g_current_sort_col2[IOBUF_TAB], p1, p2);
+	}
+	/* Keep the order stable between refreshes. */
+	if (res == 0) {
+		res = strcmp(r1->module, r2->module);
+	}
+	if (res == 0) {
+		res = strcmp(r1->thread, r2->thread);
+	}
+	if (res == 0) {
+		res = (int)r1->large - (int)r2->large;
+	}
+	return res;
+}
+
+static struct iobuf_row *
+find_last_iobuf_row(const struct iobuf_row *rows, uint32_t count, const char *module,
+		    uint64_t thread_id, bool large)
+{
+	uint32_t i;
+
+	for (i = 0; i < count; i++) {
+		if (!rows[i].shared && rows[i].thread_id == thread_id && rows[i].large == large &&
+		    strcmp(rows[i].module, module) == 0) {
+			return (struct iobuf_row *)&rows[i];
+		}
+	}
+
+	return NULL;
+}
+
+static void
+fill_iobuf_channel_row(struct iobuf_row *row, const struct rpc_iobuf_channel *channel, bool large,
+		       const struct rpc_iobuf_channel_pool *pool, const struct iobuf_row *last_rows,
+		       uint32_t last_count, double elapsed)
+{
+	const struct iobuf_row *last;
+
+	memset(row, 0, sizeof(*row));
+	snprintf(row->module, sizeof(row->module), "%s", channel->module);
+	snprintf(row->thread, sizeof(row->thread), "%s", channel->thread);
+	row->thread_id = channel->thread_id;
+	row->large = large;
+	row->size = pool->cache_size;
+	row->free = pool->cache_count;
+	row->waiting = pool->queued;
+	row->cache_gets = pool->cache;
+	row->main_gets = pool->main;
+	row->retries = pool->retry;
+
+	last = find_last_iobuf_row(last_rows, last_count, row->module, row->thread_id, large);
+	if (last != NULL && elapsed > 0 && row->retries >= last->retries) {
+		row->retry_rate = (double)(row->retries - last->retries) / elapsed;
+	}
+}
+
+static void
+fill_iobuf_shared_row(struct iobuf_row *row, const struct rpc_iobuf_node *node, bool large,
+		      const struct rpc_iobuf_pool *pool, const struct iobuf_row *channel_rows,
+		      uint32_t channel_count, bool single_node)
+{
+	uint64_t cached = 0;
+	uint32_t i;
+
+	memset(row, 0, sizeof(*row));
+	snprintf(row->module, sizeof(row->module), "(pool)");
+	snprintf(row->thread, sizeof(row->thread), "numa %d", node->numa_id);
+	row->shared = true;
+	row->large = large;
+	row->size = pool->count;
+	row->free = pool->free;
+
+	/* The channels are summed over the NUMA nodes, so only one node can be attributed to them. */
+	if (!single_node) {
+		return;
+	}
+
+	for (i = 0; i < channel_count; i++) {
+		if (channel_rows[i].large != large) {
+			continue;
+		}
+		cached += channel_rows[i].free;
+		row->waiting += channel_rows[i].waiting;
+		row->cache_gets += channel_rows[i].cache_gets;
+		row->main_gets += channel_rows[i].main_gets;
+		row->retries += channel_rows[i].retries;
+		row->retry_rate += channel_rows[i].retry_rate;
+	}
+
+	/* The values are read thread by thread, so clamp the skew. */
+	row->in_use = pool->count > pool->free + cached ? pool->count - pool->free - cached : 0;
+	row->in_use_known = true;
+}
+
+static int
+get_iobuf_data(void)
+{
+	struct spdk_jsonrpc_client_response *json_resp = NULL;
+	struct spdk_json_val *array, *val;
+	struct rpc_iobuf_node *nodes;
+	struct rpc_iobuf_channel channel;
+	struct iobuf_row *rows;
+	struct timespec now;
+	uint32_t num_nodes = 0, count = 0, channel_count, i;
+	double elapsed = 0;
+	int rc;
+
+	rc = rpc_send_req("iobuf_get_usage", &json_resp);
+	if (rc) {
+		return rc;
+	}
+
+	nodes = calloc(RPC_MAX_IOBUF_NODES, sizeof(*nodes));
+	rows = calloc(SPDK_COUNTOF(g_iobuf_rows), sizeof(*rows));
+	if (nodes == NULL || rows == NULL) {
+		rc = -ENOMEM;
+		goto end;
+	}
+
+	rc = spdk_json_find_array(json_resp->result, "pools", NULL, &array);
+	if (rc) {
+		goto end;
+	}
+
+	for (val = spdk_json_array_first(array); val != NULL && num_nodes < RPC_MAX_IOBUF_NODES;
+	     val = spdk_json_next(val)) {
+		rc = spdk_json_decode_object_relaxed(val, rpc_iobuf_node_decoders,
+						     SPDK_COUNTOF(rpc_iobuf_node_decoders), &nodes[num_nodes]);
+		if (rc) {
+			goto end;
+		}
+		num_nodes++;
+	}
+
+	rc = spdk_json_find_array(json_resp->result, "channels", NULL, &array);
+	if (rc) {
+		goto end;
+	}
+
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	if (g_iobuf_last_time.tv_sec != 0 || g_iobuf_last_time.tv_nsec != 0) {
+		elapsed = (now.tv_sec - g_iobuf_last_time.tv_sec) +
+			  (now.tv_nsec - g_iobuf_last_time.tv_nsec) / 1e9;
+	}
+
+	pthread_mutex_lock(&g_thread_lock);
+	for (val = spdk_json_array_first(array);
+	     val != NULL && count + 2 <= RPC_MAX_IOBUF_CHANNELS * 2; val = spdk_json_next(val)) {
+		memset(&channel, 0, sizeof(channel));
+		rc = spdk_json_decode_object_relaxed(val, rpc_iobuf_channel_decoders,
+						     SPDK_COUNTOF(rpc_iobuf_channel_decoders), &channel);
+		if (rc) {
+			free(channel.module);
+			free(channel.thread);
+			break;
+		}
+
+		fill_iobuf_channel_row(&rows[count], &channel, false, &channel.small_pool, g_iobuf_rows,
+				       g_last_iobuf_count, elapsed);
+		fill_iobuf_channel_row(&rows[count + 1], &channel, true, &channel.large_pool, g_iobuf_rows,
+				       g_last_iobuf_count, elapsed);
+		count += 2;
+		free(channel.module);
+		free(channel.thread);
+	}
+	pthread_mutex_unlock(&g_thread_lock);
+
+	if (rc) {
+		goto end;
+	}
+
+	channel_count = count;
+	for (i = 0; i < num_nodes; i++) {
+		fill_iobuf_shared_row(&rows[count++], &nodes[i], false, &nodes[i].small_pool, rows,
+				      channel_count, num_nodes == 1);
+		fill_iobuf_shared_row(&rows[count++], &nodes[i], true, &nodes[i].large_pool, rows,
+				      channel_count, num_nodes == 1);
+	}
+
+	qsort(rows, count, sizeof(*rows), sort_iobuf);
+
+	pthread_mutex_lock(&g_thread_lock);
+	memcpy(g_iobuf_rows, rows, count * sizeof(*rows));
+	g_last_iobuf_count = count;
+	g_iobuf_last_time = now;
+	pthread_mutex_unlock(&g_thread_lock);
+
+end:
+	free(nodes);
+	free(rows);
+	spdk_jsonrpc_client_free_response(json_resp);
+	return rc;
+}
+
+struct rpc_mem_heap {
+	int32_t numa_id;
+	uint64_t total_bytes;
+	uint64_t free_bytes;
+	uint64_t allocated_bytes;
+	uint64_t greatest_free_bytes;
+	uint32_t free_count;
+	uint32_t alloc_count;
+};
+
+struct rpc_mem_mempool {
+	char *name;
+	int32_t numa_id;
+	uint32_t size;
+	uint32_t cache_size;
+	uint32_t object_size;
+	uint32_t available;
+	uint32_t in_use;
+};
+
+struct rpc_mem_memzone {
+	char *name;
+	int32_t numa_id;
+	uint64_t length;
+};
+
+static const struct spdk_json_object_decoder rpc_mem_heap_decoders[] = {
+	{"numa_id", offsetof(struct rpc_mem_heap, numa_id), spdk_json_decode_int32},
+	{"total_bytes", offsetof(struct rpc_mem_heap, total_bytes), spdk_json_decode_uint64},
+	{"free_bytes", offsetof(struct rpc_mem_heap, free_bytes), spdk_json_decode_uint64},
+	{"allocated_bytes", offsetof(struct rpc_mem_heap, allocated_bytes), spdk_json_decode_uint64},
+	{"greatest_free_bytes", offsetof(struct rpc_mem_heap, greatest_free_bytes), spdk_json_decode_uint64},
+	{"free_count", offsetof(struct rpc_mem_heap, free_count), spdk_json_decode_uint32},
+	{"alloc_count", offsetof(struct rpc_mem_heap, alloc_count), spdk_json_decode_uint32},
+};
+
+static const struct spdk_json_object_decoder rpc_mem_mempool_decoders[] = {
+	{"name", offsetof(struct rpc_mem_mempool, name), spdk_json_decode_string},
+	{"numa_id", offsetof(struct rpc_mem_mempool, numa_id), spdk_json_decode_int32},
+	{"size", offsetof(struct rpc_mem_mempool, size), spdk_json_decode_uint32},
+	{"cache_size", offsetof(struct rpc_mem_mempool, cache_size), spdk_json_decode_uint32},
+	{"object_size", offsetof(struct rpc_mem_mempool, object_size), spdk_json_decode_uint32},
+	{"available", offsetof(struct rpc_mem_mempool, available), spdk_json_decode_uint32},
+	{"in_use", offsetof(struct rpc_mem_mempool, in_use), spdk_json_decode_uint32},
+};
+
+static const struct spdk_json_object_decoder rpc_mem_memzone_decoders[] = {
+	{"name", offsetof(struct rpc_mem_memzone, name), spdk_json_decode_string},
+	{"numa_id", offsetof(struct rpc_mem_memzone, numa_id), spdk_json_decode_int32},
+	{"length", offsetof(struct rpc_mem_memzone, length), spdk_json_decode_uint64},
+};
+
+static uint64_t
+mem_used_pct_x100(const struct mem_row *row)
+{
+	if (!row->usage_known || row->total == 0) {
+		return 0;
+	}
+
+	return row->used * 10000 / row->total;
+}
+
+static int
+subsort_mem(enum column_memory_type sort_column, const void *p1, const void *p2)
+{
+	const struct mem_row *r1 = p1;
+	const struct mem_row *r2 = p2;
+
+	switch (sort_column) {
+	case COL_MEM_TYPE:
+		return strcmp(r1->type, r2->type);
+	case COL_MEM_NAME:
+		return strcmp(r1->name, r2->name);
+	case COL_MEM_NUMA:
+		return r1->numa_id - r2->numa_id;
+	case COL_MEM_TOTAL:
+		return compare_desc(r1->total, r2->total);
+	case COL_MEM_USED:
+		return compare_desc(r1->usage_known ? r1->used : 0, r2->usage_known ? r2->used : 0);
+	case COL_MEM_FREE:
+		return compare_desc(r1->usage_known ? r1->free : 0, r2->usage_known ? r2->free : 0);
+	case COL_MEM_USED_PCT:
+		return compare_desc(mem_used_pct_x100(r1), mem_used_pct_x100(r2));
+	case COL_MEM_OBJECTS:
+		return compare_desc(r1->objects_known ? r1->objects : 0, r2->objects_known ? r2->objects : 0);
+	case COL_MEM_IN_USE:
+		return compare_desc(r1->in_use_known ? r1->in_use : 0, r2->in_use_known ? r2->in_use : 0);
+	case COL_MEM_LARGEST_FREE:
+		return compare_desc(r1->largest_free_known ? r1->largest_free : 0,
+				    r2->largest_free_known ? r2->largest_free : 0);
+	case COL_MEM_NONE:
+	default:
+		return 0;
+	}
+}
+
+static int
+sort_mem(const void *p1, const void *p2)
+{
+	const struct mem_row *r1 = p1;
+	const struct mem_row *r2 = p2;
+	int res;
+
+	res = subsort_mem(g_current_sort_col[MEMORY_TAB], p1, p2);
+	if (res == 0) {
+		res = subsort_mem(g_current_sort_col2[MEMORY_TAB], p1, p2);
+	}
+	/* Keep the order stable between refreshes. */
+	if (res == 0) {
+		res = strcmp(r1->type, r2->type);
+	}
+	if (res == 0) {
+		res = strcmp(r1->name, r2->name);
+	}
+	return res;
+}
+
+static int
+get_mem_data(void)
+{
+	struct spdk_jsonrpc_client_response *json_resp = NULL;
+	struct spdk_json_val *array, *val;
+	struct mem_row *rows, *row;
+	struct rpc_mem_heap heap;
+	struct rpc_mem_mempool mempool;
+	struct rpc_mem_memzone memzone;
+	uint32_t count = 0;
+	int rc;
+
+	rc = rpc_send_req("env_dpdk_get_mem_usage", &json_resp);
+	if (rc) {
+		return rc;
+	}
+
+	rows = calloc(RPC_MAX_MEM_ROWS, sizeof(*rows));
+	if (rows == NULL) {
+		rc = -ENOMEM;
+		goto end;
+	}
+
+	rc = spdk_json_find_array(json_resp->result, "heaps", NULL, &array);
+	if (rc) {
+		goto end;
+	}
+
+	for (val = spdk_json_array_first(array); val != NULL && count < RPC_MAX_MEM_ROWS;
+	     val = spdk_json_next(val)) {
+		memset(&heap, 0, sizeof(heap));
+		rc = spdk_json_decode_object_relaxed(val, rpc_mem_heap_decoders,
+						     SPDK_COUNTOF(rpc_mem_heap_decoders), &heap);
+		if (rc) {
+			goto end;
+		}
+
+		row = &rows[count++];
+		snprintf(row->type, sizeof(row->type), "heap");
+		snprintf(row->name, sizeof(row->name), "hugepage heap");
+		row->numa_id = heap.numa_id;
+		row->total = heap.total_bytes;
+		row->used = heap.allocated_bytes;
+		row->free = heap.free_bytes;
+		row->usage_known = true;
+		row->objects = heap.alloc_count;
+		row->objects_known = true;
+		row->largest_free = heap.greatest_free_bytes;
+		row->largest_free_known = true;
+	}
+
+	rc = spdk_json_find_array(json_resp->result, "mempools", NULL, &array);
+	if (rc) {
+		goto end;
+	}
+
+	for (val = spdk_json_array_first(array); val != NULL && count < RPC_MAX_MEM_ROWS;
+	     val = spdk_json_next(val)) {
+		memset(&mempool, 0, sizeof(mempool));
+		rc = spdk_json_decode_object_relaxed(val, rpc_mem_mempool_decoders,
+						     SPDK_COUNTOF(rpc_mem_mempool_decoders), &mempool);
+		if (rc) {
+			free(mempool.name);
+			goto end;
+		}
+
+		row = &rows[count++];
+		snprintf(row->type, sizeof(row->type), "mempool");
+		snprintf(row->name, sizeof(row->name), "%s", mempool.name);
+		row->numa_id = mempool.numa_id;
+		row->total = (uint64_t)mempool.size * mempool.object_size;
+		row->used = (uint64_t)mempool.in_use * mempool.object_size;
+		row->free = (uint64_t)mempool.available * mempool.object_size;
+		row->usage_known = true;
+		row->objects = mempool.size;
+		row->objects_known = true;
+		row->in_use = mempool.in_use;
+		row->in_use_known = true;
+		free(mempool.name);
+	}
+
+	rc = spdk_json_find_array(json_resp->result, "memzones", NULL, &array);
+	if (rc) {
+		goto end;
+	}
+
+	for (val = spdk_json_array_first(array); val != NULL && count < RPC_MAX_MEM_ROWS;
+	     val = spdk_json_next(val)) {
+		memset(&memzone, 0, sizeof(memzone));
+		rc = spdk_json_decode_object_relaxed(val, rpc_mem_memzone_decoders,
+						     SPDK_COUNTOF(rpc_mem_memzone_decoders), &memzone);
+		if (rc) {
+			free(memzone.name);
+			goto end;
+		}
+
+		row = &rows[count++];
+		snprintf(row->type, sizeof(row->type), "memzone");
+		snprintf(row->name, sizeof(row->name), "%s", memzone.name);
+		row->numa_id = memzone.numa_id;
+		row->total = memzone.length;
+		free(memzone.name);
+	}
+
+	qsort(rows, count, sizeof(*rows), sort_mem);
+
+	pthread_mutex_lock(&g_thread_lock);
+	memcpy(g_mem_rows, rows, count * sizeof(*rows));
+	g_last_mem_count = count;
+	pthread_mutex_unlock(&g_thread_lock);
+
+end:
+	free(rows);
+	spdk_jsonrpc_client_free_response(json_resp);
+	return rc;
+}
+
 static void
 print_max_len(WINDOW *win, int row, uint16_t col, uint16_t max_len, enum str_alignment alignment,
 	      const char *string)
@@ -1193,7 +1876,7 @@ draw_menu_win(void)
 	wbkgd(g_menu_win, COLOR_PAIR(2));
 	box(g_menu_win, 0, 0);
 	print_max_len(g_menu_win, 1, 1, 0, ALIGN_LEFT,
-		      "  [q] Quit  |  [1-3][Tab] Switch tab  |  [PgUp] Previous page  |  [PgDown] Next page  |  [Enter] Item details  |  [h] Help");
+		      "  [q] Quit  |  [1-5][Tab] Switch tab  |  [PgUp] Previous page  |  [PgDown] Next page  |  [Enter] Item details  |  [h] Help");
 }
 
 static void
@@ -1825,11 +2508,229 @@ refresh_cores_tab(uint8_t current_page)
 	return max_pages;
 }
 
+static uint16_t
+get_column_offset(enum tabs tab, int col)
+{
+	struct col_desc *col_desc = g_col_desc[tab];
+	uint16_t offset = 1;
+	int j;
+
+	/* The same layout as the header that draw_tabs() prints. */
+	for (j = col; j != 0; j--) {
+		if (!col_desc[j - 1].disabled) {
+			offset += col_desc[j - 1].max_data_string;
+			offset += col_desc[j - 1].name_len % 2 + 1;
+		}
+	}
+
+	return offset;
+}
+
+static void
+draw_cell(enum tabs tab, int col, uint8_t item_index, enum str_alignment alignment, const char *str)
+{
+	struct col_desc *col_desc = &g_col_desc[tab][col];
+
+	if (col_desc->disabled) {
+		return;
+	}
+
+	print_max_len(g_tabs[tab], TABS_DATA_START_ROW + item_index, get_column_offset(tab, col),
+		      col_desc->max_data_string, alignment, str);
+}
+
+static void
+format_count(char *str, size_t len, uint64_t value)
+{
+	snprintf(str, len, "%" PRIu64, value);
+}
+
+static void
+format_mib(char *str, size_t len, uint64_t bytes)
+{
+	snprintf(str, len, "%.1f", (double)bytes / (1024 * 1024));
+}
+
+static void
+format_pct(char *str, size_t len, uint64_t pct_x100)
+{
+	snprintf(str, len, "%.1f", (double)pct_x100 / 100);
+}
+
+static void
+draw_iobuf_tab_row(uint64_t current_row, uint8_t item_index)
+{
+	const struct iobuf_row *row = &g_iobuf_rows[current_row];
+	char str[MAX_COUNT_STR_LEN * 4];
+	int color_attr = 0;
+
+	/* Waiting requests or retries mean the pool ran out of buffers. An empty shared ring means the same
+	 * for the threads that have nothing cached, even if some buffers sit idle in the cache of another thread. */
+	if (row->waiting > 0 || row->retry_rate > 0 || (row->shared && row->free == 0)) {
+		color_attr = item_index == g_selected_row ? COLOR_PAIR(8) : COLOR_PAIR(6);
+	} else if (row->shared && iobuf_used_pct_x100(row) >= 9000) {
+		color_attr = item_index == g_selected_row ? COLOR_PAIR(2) : COLOR_PAIR(3);
+	}
+
+	if (color_attr != 0) {
+		wattron(g_tabs[IOBUF_TAB], color_attr);
+	}
+
+	draw_cell(IOBUF_TAB, COL_IOBUF_MODULE, item_index, ALIGN_LEFT, row->module);
+	draw_cell(IOBUF_TAB, COL_IOBUF_THREAD, item_index, ALIGN_LEFT, row->thread);
+	draw_cell(IOBUF_TAB, COL_IOBUF_POOL, item_index, ALIGN_LEFT, row->large ? "large" : "small");
+
+	format_count(str, sizeof(str), row->size);
+	draw_cell(IOBUF_TAB, COL_IOBUF_SIZE, item_index, ALIGN_RIGHT, str);
+	format_count(str, sizeof(str), row->free);
+	draw_cell(IOBUF_TAB, COL_IOBUF_FREE, item_index, ALIGN_RIGHT, str);
+
+	if (row->shared && row->in_use_known) {
+		format_count(str, sizeof(str), row->in_use);
+		draw_cell(IOBUF_TAB, COL_IOBUF_IN_USE, item_index, ALIGN_RIGHT, str);
+		format_pct(str, sizeof(str), iobuf_used_pct_x100(row));
+		draw_cell(IOBUF_TAB, COL_IOBUF_USED_PCT, item_index, ALIGN_RIGHT, str);
+	} else if (row->shared) {
+		draw_cell(IOBUF_TAB, COL_IOBUF_IN_USE, item_index, ALIGN_RIGHT, "n/a");
+		draw_cell(IOBUF_TAB, COL_IOBUF_USED_PCT, item_index, ALIGN_RIGHT, "n/a");
+	} else {
+		draw_cell(IOBUF_TAB, COL_IOBUF_IN_USE, item_index, ALIGN_RIGHT, "");
+		draw_cell(IOBUF_TAB, COL_IOBUF_USED_PCT, item_index, ALIGN_RIGHT, "");
+	}
+
+	format_count(str, sizeof(str), row->waiting);
+	draw_cell(IOBUF_TAB, COL_IOBUF_WAITING, item_index, ALIGN_RIGHT, str);
+	format_count(str, sizeof(str), row->cache_gets);
+	draw_cell(IOBUF_TAB, COL_IOBUF_CACHE_GETS, item_index, ALIGN_RIGHT, str);
+	format_count(str, sizeof(str), row->main_gets);
+	draw_cell(IOBUF_TAB, COL_IOBUF_MAIN_GETS, item_index, ALIGN_RIGHT, str);
+	format_count(str, sizeof(str), row->retries);
+	draw_cell(IOBUF_TAB, COL_IOBUF_RETRIES, item_index, ALIGN_RIGHT, str);
+	snprintf(str, sizeof(str), "%.1f", row->retry_rate);
+	draw_cell(IOBUF_TAB, COL_IOBUF_RETRY_RATE, item_index, ALIGN_RIGHT, str);
+
+	if (color_attr != 0) {
+		wattroff(g_tabs[IOBUF_TAB], color_attr);
+	}
+}
+
+static void
+draw_mem_tab_row(uint64_t current_row, uint8_t item_index)
+{
+	const struct mem_row *row = &g_mem_rows[current_row];
+	char str[MAX_COUNT_STR_LEN * 4];
+	int color_attr = 0;
+
+	if (row->usage_known && mem_used_pct_x100(row) >= 9000) {
+		color_attr = item_index == g_selected_row ? COLOR_PAIR(8) : COLOR_PAIR(6);
+	}
+
+	if (color_attr != 0) {
+		wattron(g_tabs[MEMORY_TAB], color_attr);
+	}
+
+	draw_cell(MEMORY_TAB, COL_MEM_TYPE, item_index, ALIGN_LEFT, row->type);
+	draw_cell(MEMORY_TAB, COL_MEM_NAME, item_index, ALIGN_LEFT, row->name);
+
+	if (row->numa_id < 0) {
+		snprintf(str, sizeof(str), "any");
+	} else {
+		snprintf(str, sizeof(str), "%d", row->numa_id);
+	}
+	draw_cell(MEMORY_TAB, COL_MEM_NUMA, item_index, ALIGN_RIGHT, str);
+
+	format_mib(str, sizeof(str), row->total);
+	draw_cell(MEMORY_TAB, COL_MEM_TOTAL, item_index, ALIGN_RIGHT, str);
+
+	if (row->usage_known) {
+		format_mib(str, sizeof(str), row->used);
+		draw_cell(MEMORY_TAB, COL_MEM_USED, item_index, ALIGN_RIGHT, str);
+		format_mib(str, sizeof(str), row->free);
+		draw_cell(MEMORY_TAB, COL_MEM_FREE, item_index, ALIGN_RIGHT, str);
+		format_pct(str, sizeof(str), mem_used_pct_x100(row));
+		draw_cell(MEMORY_TAB, COL_MEM_USED_PCT, item_index, ALIGN_RIGHT, str);
+	} else {
+		draw_cell(MEMORY_TAB, COL_MEM_USED, item_index, ALIGN_RIGHT, "");
+		draw_cell(MEMORY_TAB, COL_MEM_FREE, item_index, ALIGN_RIGHT, "");
+		draw_cell(MEMORY_TAB, COL_MEM_USED_PCT, item_index, ALIGN_RIGHT, "");
+	}
+
+	if (row->objects_known) {
+		format_count(str, sizeof(str), row->objects);
+	} else {
+		str[0] = '\0';
+	}
+	draw_cell(MEMORY_TAB, COL_MEM_OBJECTS, item_index, ALIGN_RIGHT, str);
+
+	if (row->in_use_known) {
+		format_count(str, sizeof(str), row->in_use);
+	} else {
+		str[0] = '\0';
+	}
+	draw_cell(MEMORY_TAB, COL_MEM_IN_USE, item_index, ALIGN_RIGHT, str);
+
+	if (row->largest_free_known) {
+		format_mib(str, sizeof(str), row->largest_free);
+	} else {
+		str[0] = '\0';
+	}
+	draw_cell(MEMORY_TAB, COL_MEM_LARGEST_FREE, item_index, ALIGN_RIGHT, str);
+
+	if (color_attr != 0) {
+		wattroff(g_tabs[MEMORY_TAB], color_attr);
+	}
+}
+
+static uint8_t
+refresh_rows_tab(enum tabs tab, uint8_t current_page, uint64_t count,
+		 void (*draw_row)(uint64_t current_row, uint8_t item_index))
+{
+	uint64_t i, j, first = (uint64_t)current_page * g_max_data_rows;
+	uint8_t max_pages, item_index;
+
+	max_pages = spdk_max((count + g_max_data_rows - 1) / g_max_data_rows, 1);
+
+	for (i = first; i < first + g_max_data_rows; i++) {
+		item_index = i - first;
+
+		/* Blank the rows that are left when the number of rows decreases. */
+		if (i >= count) {
+			for (j = 1; j < (uint64_t)g_max_col - 1; j++) {
+				mvwprintw(g_tabs[tab], item_index + TABS_DATA_START_ROW, j, " ");
+			}
+			continue;
+		}
+
+		draw_row_background(item_index, tab);
+		draw_row(i, item_index);
+
+		if (item_index == g_selected_row) {
+			wattroff(g_tabs[tab], COLOR_PAIR(2));
+		}
+	}
+
+	g_max_selected_row = count > first ? spdk_min(count - first, (uint64_t)g_max_data_rows) - 1 : 0;
+
+	return max_pages;
+}
+
+static uint8_t
+refresh_iobuf_tab(uint8_t current_page)
+{
+	return refresh_rows_tab(IOBUF_TAB, current_page, g_last_iobuf_count, draw_iobuf_tab_row);
+}
+
+static uint8_t
+refresh_mem_tab(uint8_t current_page)
+{
+	return refresh_rows_tab(MEMORY_TAB, current_page, g_last_mem_count, draw_mem_tab_row);
+}
+
 static uint8_t
 refresh_tab(enum tabs tab, uint8_t current_page)
 {
-	uint8_t (*refresh_function[NUMBER_OF_TABS])(uint8_t current_page) = {refresh_threads_tab, refresh_pollers_tab, refresh_cores_tab};
-	int color_pair[NUMBER_OF_TABS] = {COLOR_PAIR(2), COLOR_PAIR(2), COLOR_PAIR(2)};
+	uint8_t (*refresh_function[NUMBER_OF_TABS])(uint8_t current_page) = {refresh_threads_tab, refresh_pollers_tab, refresh_cores_tab, refresh_iobuf_tab, refresh_mem_tab};
+	int color_pair[NUMBER_OF_TABS] = {COLOR_PAIR(2), COLOR_PAIR(2), COLOR_PAIR(2), COLOR_PAIR(2), COLOR_PAIR(2)};
 	int i;
 	uint8_t max_pages = 0;
 
@@ -3082,6 +3983,19 @@ data_thread_routine(void *arg)
 			print_bottom_message("ERROR occurred while getting scheduler data");
 		}
 
+		/* The memory RPCs walk the pools and the memzones, so poll them only while they are shown. */
+		if (g_active_tab == IOBUF_TAB) {
+			rc = get_iobuf_data();
+			if (rc) {
+				print_bottom_message("ERROR occurred while getting iobuf usage (iobuf_get_usage RPC)");
+			}
+		} else if (g_active_tab == MEMORY_TAB) {
+			rc = get_mem_data();
+			if (rc) {
+				print_bottom_message("ERROR occurred while getting memory usage (env_dpdk_get_mem_usage RPC)");
+			}
+		}
+
 		usleep(refresh_rate);
 	}
 
@@ -3120,7 +4034,7 @@ help_window_display(void)
 	print_left(help_win, ++row, col,  HELP_WIN_WIDTH,
 		   "[Tab] Next tab	- switch to next tab", COLOR_PAIR(10));
 	print_left(help_win, ++row, col,  HELP_WIN_WIDTH,
-		   "[1-3] Select tab	- switch to THREADS, POLLERS or CORES tab", COLOR_PAIR(10));
+		   "[1-5] Select tab	- switch to THREADS, POLLERS, CORES, IOBUF or MEMORY tab", COLOR_PAIR(10));
 	print_left(help_win, ++row, col,  HELP_WIN_WIDTH,
 		   "[PgUp] Previous page	- scroll up to previous page", COLOR_PAIR(10));
 	print_left(help_win, ++row, col,  HELP_WIN_WIDTH,
@@ -3259,7 +4173,10 @@ show_stats(pthread_t *data_thread)
 		case '1':
 		case '2':
 		case '3':
+		case '4':
+		case '5':
 			active_tab = c - '1';
+			g_active_tab = active_tab;
 			current_page = 0;
 			g_selected_row = 0;
 			switch_tab(active_tab);
@@ -3270,6 +4187,7 @@ show_stats(pthread_t *data_thread)
 			} else {
 				active_tab = THREADS_TAB;
 			}
+			g_active_tab = active_tab;
 			g_selected_row = 0;
 			current_page = 0;
 			switch_tab(active_tab);

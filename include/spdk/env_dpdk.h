@@ -96,6 +96,82 @@ void spdk_env_dpdk_dump_mem_stats(FILE *file);
  */
 int spdk_env_dpdk_get_mem_stats(struct spdk_env_dpdk_mem_stats *stats, uint32_t numa_id);
 
+#define SPDK_ENV_DPDK_NAME_MAX 64
+
+/**
+ * Usage of one DPDK mempool.
+ */
+struct spdk_env_dpdk_mempool_info {
+	/** Name of the mempool */
+	char name[SPDK_ENV_DPDK_NAME_MAX];
+
+	/** NUMA node the mempool was created on, or -1 for any */
+	int32_t numa_id;
+
+	/** Number of objects in the mempool */
+	uint32_t size;
+
+	/** Size of the per-lcore cache of the mempool */
+	uint32_t cache_size;
+
+	/** Size in bytes of an object, including the mempool header and trailer */
+	uint32_t object_size;
+
+	/** Number of objects that are free, including the ones in the per-lcore caches */
+	uint32_t available;
+
+	/** Number of objects that are in use */
+	uint32_t in_use;
+};
+
+/**
+ * Callback for spdk_env_dpdk_foreach_mempool().
+ *
+ * \param info Usage of a mempool. It is only valid during the call.
+ * \param ctx Context passed to spdk_env_dpdk_foreach_mempool().
+ */
+typedef void (*spdk_env_dpdk_mempool_fn)(const struct spdk_env_dpdk_mempool_info *info, void *ctx);
+
+/**
+ * Call a function for each DPDK mempool, with its usage. The mempool list is locked during the
+ * call, so the function must not create or free a mempool.
+ *
+ * \param fn Function to call.
+ * \param ctx Context passed to the function.
+ */
+void spdk_env_dpdk_foreach_mempool(spdk_env_dpdk_mempool_fn fn, void *ctx);
+
+/**
+ * A DPDK memzone.
+ */
+struct spdk_env_dpdk_memzone_info {
+	/** Name of the memzone */
+	char name[SPDK_ENV_DPDK_NAME_MAX];
+
+	/** NUMA node of the memzone, or -1 if unknown */
+	int32_t numa_id;
+
+	/** Length of the memzone in bytes */
+	uint64_t length;
+};
+
+/**
+ * Callback for spdk_env_dpdk_foreach_memzone().
+ *
+ * \param info A memzone. It is only valid during the call.
+ * \param ctx Context passed to spdk_env_dpdk_foreach_memzone().
+ */
+typedef void (*spdk_env_dpdk_memzone_fn)(const struct spdk_env_dpdk_memzone_info *info, void *ctx);
+
+/**
+ * Call a function for each DPDK memzone. The memzone list is locked during the call, so the
+ * function must not reserve or free a memzone.
+ *
+ * \param fn Function to call.
+ * \param ctx Context passed to the function.
+ */
+void spdk_env_dpdk_foreach_memzone(spdk_env_dpdk_memzone_fn fn, void *ctx);
+
 #ifdef __cplusplus
 }
 #endif

@@ -1664,6 +1664,70 @@ Example response:
 }
 ~~~
 
+### env_dpdk_get_mem_usage {#rpc_env_dpdk_get_mem_usage}
+
+Retrieve the usage of the DPDK memory: the heap of each NUMA node, every mempool with its free and used objects, and
+every memzone. The heap is where all hugepage memory of the application comes from, so `allocated_bytes` is what the
+application uses and `greatest_free_bytes` shows how fragmented the free memory is. A mempool reports
+`in_use = size - available`, where the objects in the per-lcore caches count as available. A mempool is also a memzone,
+so the two lists overlap.
+
+#### Parameters
+
+{{ env_dpdk_get_mem_usage_params }}
+
+#### Example
+
+Example request:
+
+~~~json
+{
+  "jsonrpc": "2.0",
+  "method": "env_dpdk_get_mem_usage",
+  "id": 1
+}
+~~~
+
+Example response:
+
+~~~json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "heaps": [
+      {
+        "numa_id": 0,
+        "total_bytes": 1744830464,
+        "free_bytes": 761708224,
+        "allocated_bytes": 983122240,
+        "greatest_free_bytes": 700000000,
+        "free_count": 7,
+        "alloc_count": 76
+      }
+    ],
+    "mempools": [
+      {
+        "name": "bdev_io_930",
+        "numa_id": -1,
+        "size": 65535,
+        "cache_size": 0,
+        "object_size": 1600,
+        "available": 65535,
+        "in_use": 0
+      }
+    ],
+    "memzones": [
+      {
+        "name": "MP_bdev_io_930_0",
+        "numa_id": 0,
+        "length": 104915200
+      }
+    ]
+  }
+}
+~~~
+
 ## Acceleration Framework Layer {#jsonrpc_components_accel_fw}
 
 ### accel_get_module_info {#rpc_accel_get_module_info}
@@ -12910,6 +12974,62 @@ Example response:
       }
     }
   ]
+}
+~~~
+
+### iobuf_get_usage {#rpc_iobuf_get_usage}
+
+Retrieve the current usage of the iobuf pools. Unlike `iobuf_get_stats`, which counts how many buffers were
+taken, this shows how many are free now.
+
+`pools` has the size and the free buffers of the shared ring of each NUMA node, for the small and the large
+pool. A buffer that is neither in the shared ring nor in a thread cache is held by a user, so
+`count - free - sum(cache_count)` is the number of buffers in use.
+
+`channels` has one entry for each module on each thread: the configured `cache_size`, the buffers in the cache now
+(`cache_count`), the requests waiting for a buffer now (`queued`), and the counters of `iobuf_get_stats`. The values
+are read one thread at a time, so they are not a consistent snapshot.
+
+#### Parameters
+
+{{ iobuf_get_usage_params }}
+
+#### Example
+
+Example request:
+
+~~~json
+{
+  "jsonrpc": "2.0",
+  "method": "iobuf_get_usage",
+  "id": 1
+}
+~~~
+
+Example response:
+
+~~~json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "pools": [
+      {
+        "numa_id": 0,
+        "small_pool": {"count": 8192, "free": 8000, "bufsize": 8192},
+        "large_pool": {"count": 1024, "free": 700, "bufsize": 135168}
+      }
+    ],
+    "channels": [
+      {
+        "module": "bdev",
+        "thread": "app_thread",
+        "thread_id": 1,
+        "small_pool": {"cache_size": 128, "cache_count": 100, "queued": 0, "cache": 421965, "main": 1218, "retry": 0},
+        "large_pool": {"cache_size": 16, "cache_count": 16, "queued": 0, "cache": 0, "main": 0, "retry": 0}
+      }
+    ]
+  }
 }
 ~~~
 
