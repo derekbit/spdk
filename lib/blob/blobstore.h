@@ -156,6 +156,8 @@ struct spdk_blob {
 	RB_ENTRY(spdk_blob) link;
 
 	uint32_t frozen_refcnt;
+	/* Set atomically when a failed metadata update leaves data I/O unsafe. */
+	int io_error;
 	/* Parent replacement and I/O queued by a freeze keep the blob alive through callbacks. */
 	pthread_mutex_t close_barrier_mutex;
 	uint32_t close_barriers;

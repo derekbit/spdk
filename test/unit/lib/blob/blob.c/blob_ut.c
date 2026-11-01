@@ -7811,6 +7811,110 @@ blob_create_snapshot_power_failure(void)
 	}
 }
 
+static uint64_t
+ut_create_snapshot_power_failure_run(uint64_t error_at, uint64_t crash_at, int *snapshot_rc)
+{
+	struct spdk_bs_dev *dev;
+	struct spdk_blob_store *bs;
+	struct spdk_blob_opts opts;
+	struct spdk_blob *blob;
+	struct spdk_io_channel *channel;
+	struct spdk_power_failure_thresholds thresholds = {};
+	spdk_blob_id blobid;
+	uint8_t wbuf[4096], rbuf[4096];
+	uint64_t writes;
+	int io_err = 0xbad;
+
+	dev = init_dev();
+	spdk_bs_init(dev, NULL, bs_op_with_handle_complete, NULL);
+	poll_threads();
+	SPDK_CU_ASSERT_FATAL(g_bserrno == 0);
+	SPDK_CU_ASSERT_FATAL(g_bs != NULL);
+	bs = g_bs;
+
+	ut_spdk_blob_opts_init(&opts);
+	opts.num_clusters = 1;
+	spdk_bs_create_blob_ext(bs, &opts, blob_op_with_id_complete, NULL);
+	poll_threads();
+	SPDK_CU_ASSERT_FATAL(g_bserrno == 0);
+	blobid = g_blobid;
+
+	spdk_bs_open_blob(bs, blobid, blob_op_with_handle_complete, NULL);
+	poll_threads();
+	SPDK_CU_ASSERT_FATAL(g_bserrno == 0);
+	blob = g_blob;
+	channel = spdk_bs_alloc_io_channel(bs);
+	SPDK_CU_ASSERT_FATAL(channel != NULL);
+	memset(wbuf, 0xa5, sizeof(wbuf));
+	spdk_blob_io_write(blob, channel, wbuf, 0, 1, blob_op_complete, &io_err);
+	poll_threads();
+	SPDK_CU_ASSERT_FATAL(io_err == 0);
+	spdk_bs_free_io_channel(channel);
+	spdk_blob_close(blob, blob_op_complete, NULL);
+	poll_threads();
+	SPDK_CU_ASSERT_FATAL(g_bserrno == 0);
+
+	dev_reset_power_failure_event();
+	/* Count the writes issued by a snapshot when no failure is injected. */
+	thresholds.write_threshold = crash_at != 0 ? crash_at : UINT64_MAX;
+	dev_set_power_failure_thresholds(thresholds);
+	if (error_at != 0) {
+		dev_set_write_error_once(error_at);
+	}
+	spdk_bs_create_snapshot(bs, blobid, NULL, blob_op_with_id_complete, NULL);
+	poll_threads();
+	*snapshot_rc = g_bserrno;
+	writes = g_power_failure_counters.write_counter;
+
+	/* A power failure leaves exactly what reached the device. */
+	dev_reset_power_failure_event();
+	ut_bs_dirty_load(&bs, NULL);
+
+	spdk_bs_open_blob(bs, blobid, blob_op_with_handle_complete, NULL);
+	poll_threads();
+	SPDK_CU_ASSERT_FATAL(g_bserrno == 0);
+	blob = g_blob;
+	channel = spdk_bs_alloc_io_channel(bs);
+	SPDK_CU_ASSERT_FATAL(channel != NULL);
+	memset(rbuf, 0, sizeof(rbuf));
+	io_err = 0xbad;
+	spdk_blob_io_read(blob, channel, rbuf, 0, 1, blob_op_complete, &io_err);
+	poll_threads();
+	CU_ASSERT(io_err == 0);
+	CU_ASSERT(memcmp(rbuf, wbuf, sizeof(rbuf)) == 0);
+	spdk_bs_free_io_channel(channel);
+
+	spdk_blob_close(blob, blob_op_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+	spdk_bs_unload(bs, bs_op_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+
+	return writes;
+}
+
+/*
+ * A snapshot create whose original blob metadata sync fails after its root page was written must
+ * not make the new snapshot lose the data map before the original blob is rolled back.
+ */
+static void
+blob_create_snapshot_origblob_sync_failure_power_failure(void)
+{
+	uint64_t total_writes, error_at, crash_at;
+	int rc;
+
+	total_writes = ut_create_snapshot_power_failure_run(0, 0, &rc);
+	CU_ASSERT(rc == 0);
+	SPDK_CU_ASSERT_FATAL(total_writes > 0);
+
+	for (error_at = 1; error_at <= total_writes; error_at++) {
+		for (crash_at = error_at + 1; crash_at <= total_writes + 16; crash_at++) {
+			ut_create_snapshot_power_failure_run(error_at, crash_at, &rc);
+		}
+	}
+}
+
 #define IO_UT_BLOCKS_PER_CLUSTER 64
 
 static void
@@ -10590,8 +10694,8 @@ _blob_esnap_replace_parent_inflight_io(bool write, bool set_parent, bool hold_co
 		bs_dev = ut_esnap_dev_alloc(&esnap2_opts);
 		SPDK_CU_ASSERT_FATAL(bs_dev != NULL);
 		spdk_blob_set_esnap_bs_dev(blob, bs_dev,
-					    close_on_parent ? esnap_parent_complete_and_close : bs_op_complete,
-					    close_on_parent ? &close_ctx : NULL);
+					   close_on_parent ? esnap_parent_complete_and_close : bs_op_complete,
+					   close_on_parent ? &close_ctx : NULL);
 	}
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0xbad);
@@ -11307,6 +11411,459 @@ blob_esnap_snapshot_inflight_read(void)
 	CU_ASSERT(destroyed);
 }
 
+static void
+delete_snapshot_abort_complete(void *cb_arg, struct spdk_blob *snapshot, int bserrno)
+{
+	int *result = cb_arg;
+
+	*result = bserrno;
+}
+
+static void
+_blob_esnap_delete_snapshot_failure(bool fail_parent_xattr, bool fail_extent_write)
+{
+	struct spdk_blob_store *bs = g_bs;
+	struct spdk_blob_opts opts;
+	struct ut_esnap_opts esnap_opts;
+	struct delete_snapshot_ctx *ctx;
+	struct spdk_blob *clone, *snapshot;
+	struct spdk_bs_dev *old_back_bs_dev;
+	struct spdk_io_channel *channel;
+	const void *value;
+	size_t value_len;
+	spdk_blob_id clone_id, snapshot_id;
+	uint32_t clone_extent_page = 0;
+	uint32_t block_sz = spdk_bs_get_io_unit_size(bs);
+	uint32_t cluster_sz = spdk_bs_get_cluster_size(bs);
+	bool destroyed = false;
+	bool fail_after_map = fail_parent_xattr || fail_extent_write;
+	int result = 0xbad, io_err = 0xbad;
+	char buf[block_sz];
+	char original_buf[block_sz];
+
+	ut_spdk_blob_opts_init(&opts);
+	ut_esnap_opts_init(block_sz, cluster_sz * 2 / block_sz, __func__, &destroyed, &esnap_opts);
+	opts.esnap_id = &esnap_opts;
+	opts.esnap_id_len = sizeof(esnap_opts);
+	opts.num_clusters = 2;
+	clone = ut_blob_create_and_open(bs, &opts);
+	SPDK_CU_ASSERT_FATAL(clone != NULL);
+	clone_id = spdk_blob_get_id(clone);
+	channel = spdk_bs_alloc_io_channel(bs);
+	SPDK_CU_ASSERT_FATAL(channel != NULL);
+	memset(original_buf, 0x5a, sizeof(original_buf));
+	spdk_blob_io_write(clone, channel, original_buf, 0, 1, blob_op_complete, &io_err);
+	poll_threads();
+	SPDK_CU_ASSERT_FATAL(io_err == 0);
+	io_err = 0xbad;
+	spdk_bs_create_snapshot(bs, clone_id, NULL, blob_op_with_id_complete, NULL);
+	poll_threads();
+	SPDK_CU_ASSERT_FATAL(g_bserrno == 0);
+	snapshot_id = g_blobid;
+	if (fail_parent_xattr && g_use_extent_table) {
+		/* Give the clone an existing extent page. The abort must leave its
+		 * on-disk contents intact after rewriting the merged map elsewhere. */
+		memset(buf, 0x3c, sizeof(buf));
+		spdk_blob_io_write(clone, channel, buf, cluster_sz / block_sz, 1,
+				   blob_op_complete, &io_err);
+		poll_threads();
+		SPDK_CU_ASSERT_FATAL(io_err == 0);
+		io_err = 0xbad;
+		clone_extent_page = clone->active.extent_pages[0];
+		SPDK_CU_ASSERT_FATAL(clone_extent_page != 0);
+	}
+
+	spdk_bs_open_blob(bs, clone_id, blob_op_with_handle_complete, NULL);
+	poll_threads();
+	SPDK_CU_ASSERT_FATAL(g_bserrno == 0 && g_blob == clone);
+	spdk_bs_open_blob(bs, snapshot_id, blob_op_with_handle_complete, NULL);
+	poll_threads();
+	SPDK_CU_ASSERT_FATAL(g_bserrno == 0);
+	snapshot = g_blob;
+	SPDK_CU_ASSERT_FATAL(snapshot != NULL);
+	CU_ASSERT(spdk_blob_is_esnap_clone(snapshot));
+
+	ctx = calloc(1, sizeof(*ctx));
+	SPDK_CU_ASSERT_FATAL(ctx != NULL);
+	ctx->snapshot = snapshot;
+	ctx->snapshot_md_ro = snapshot->md_ro;
+	ctx->clone = clone;
+	ctx->clone_md_ro = clone->md_ro;
+	old_back_bs_dev = clone->back_bs_dev;
+	ctx->clone_unfreeze_ctx = blob_unfreeze_io_ctx_alloc();
+	SPDK_CU_ASSERT_FATAL(ctx->clone_unfreeze_ctx != NULL);
+	if (fail_parent_xattr && g_use_extent_table) {
+		ctx->page = spdk_zmalloc(bs->md_page_size, 0, NULL, SPDK_ENV_NUMA_ID_ANY,
+					 SPDK_MALLOC_DMA);
+		SPDK_CU_ASSERT_FATAL(ctx->page != NULL);
+	}
+	ctx->cb_fn = delete_snapshot_abort_complete;
+	ctx->cb_arg = &result;
+	clone->locked_operation_in_progress = true;
+	snapshot->locked_operation_in_progress = true;
+	spdk_bit_array_clear(bs->open_blobids, snapshot_id);
+	RB_REMOVE(spdk_blob_tree, &bs->open_blobs, snapshot);
+
+	blob_freeze_io(clone, blob_op_complete, NULL);
+	poll_threads();
+	SPDK_CU_ASSERT_FATAL(g_bserrno == 0);
+	ctx->clone_frozen = true;
+	snapshot->md_ro = false;
+	CU_ASSERT(blob_set_xattr(snapshot, SNAPSHOT_PENDING_REMOVAL, &clone_id,
+				 sizeof(clone_id), true) == 0);
+	if (fail_after_map) {
+		CU_ASSERT(snapshot->active.clusters[0] != 0);
+		CU_ASSERT(clone->active.clusters[0] == 0);
+		ctx->clone_map_num_clusters = clone->active.num_clusters;
+		ctx->clone_map_num_extent_pages = clone->active.num_extent_pages;
+		ctx->clone_original_clusters = malloc(clone->active.num_clusters *
+						      sizeof(*ctx->clone_original_clusters));
+		ctx->clone_original_extent_pages = malloc(clone->active.num_extent_pages *
+						   sizeof(*ctx->clone_original_extent_pages));
+		ctx->clone_new_extent_pages = calloc(clone->active.num_extent_pages,
+						     sizeof(*ctx->clone_new_extent_pages));
+		SPDK_CU_ASSERT_FATAL(ctx->clone_original_clusters != NULL);
+		memcpy(ctx->clone_original_clusters, clone->active.clusters,
+		       clone->active.num_clusters * sizeof(*ctx->clone_original_clusters));
+		if (clone->active.num_extent_pages != 0) {
+			SPDK_CU_ASSERT_FATAL(ctx->clone_original_extent_pages != NULL);
+			SPDK_CU_ASSERT_FATAL(ctx->clone_new_extent_pages != NULL);
+			memcpy(ctx->clone_original_extent_pages, clone->active.extent_pages,
+			       clone->active.num_extent_pages * sizeof(*ctx->clone_original_extent_pages));
+		}
+		ctx->clone_original_num_allocated_clusters = clone->active.num_allocated_clusters;
+		clone->active.clusters[0] = snapshot->active.clusters[0];
+		clone->active.num_allocated_clusters++;
+		ctx->clone_map_copied = true;
+		memset(buf, 0xa5, sizeof(buf));
+		spdk_blob_io_write(clone, channel, buf, 0, 1, blob_op_complete, &io_err);
+	} else {
+		spdk_blob_io_read(clone, channel, buf, 0, 1, blob_op_complete, &io_err);
+	}
+	poll_threads();
+	CU_ASSERT(io_err == 0xbad);
+
+	if (fail_parent_xattr) {
+		clone->md_ro = true;
+		if (g_use_extent_table) {
+			delete_snapshot_update_extent_pages(ctx, 0);
+		} else {
+			delete_snapshot_update_extent_pages_cpl(ctx);
+		}
+	} else if (fail_extent_write) {
+		delete_snapshot_update_extent_pages(ctx, -EIO);
+	} else {
+		delete_snapshot_esnap_channels_destroyed_cb(ctx, snapshot, -ENOMEM);
+	}
+	poll_threads();
+	CU_ASSERT(result == (fail_parent_xattr ? -EPERM : fail_extent_write ? -EIO : -ENOMEM));
+	CU_ASSERT(io_err == 0);
+	CU_ASSERT(clone->frozen_refcnt == 0);
+	CU_ASSERT(clone->io_error == 0);
+	if (fail_parent_xattr && g_use_extent_table) {
+		CU_ASSERT(clone->active.extent_pages[0] == clone_extent_page);
+	}
+	CU_ASSERT(clone->back_bs_dev == old_back_bs_dev);
+	CU_ASSERT(!destroyed);
+	CU_ASSERT(!snapshot->locked_operation_in_progress);
+	CU_ASSERT(snapshot->md_ro);
+	CU_ASSERT(blob_get_xattr_value(snapshot, SNAPSHOT_PENDING_REMOVAL,
+				       &value, &value_len, true) == -ENOENT);
+	if (fail_after_map) {
+		io_err = 0xbad;
+		spdk_blob_io_read(clone, channel, buf, 0, 1, blob_op_complete, &io_err);
+		poll_threads();
+		CU_ASSERT(io_err == 0);
+		CU_ASSERT(buf[0] == (char)0xa5);
+		io_err = 0xbad;
+		memset(buf, 0, sizeof(buf));
+		spdk_blob_io_read(snapshot, channel, buf, 0, 1, blob_op_complete, &io_err);
+		poll_threads();
+		CU_ASSERT(io_err == 0);
+		CU_ASSERT(memcmp(buf, original_buf, sizeof(buf)) == 0);
+
+		/* A failed deletion must not leave an unsafe cluster map on disk. */
+		CU_ASSERT(clone->open_ref == 1);
+		spdk_blob_close(clone, blob_op_complete, NULL);
+		poll_threads();
+		SPDK_CU_ASSERT_FATAL(g_bserrno == 0);
+		spdk_bs_open_blob(bs, clone_id, blob_op_with_handle_complete, NULL);
+		poll_threads();
+		SPDK_CU_ASSERT_FATAL(g_bserrno == 0 && g_blob != NULL);
+		clone = g_blob;
+		io_err = 0xbad;
+		spdk_blob_io_read(clone, channel, buf, 0, 1, blob_op_complete, &io_err);
+		poll_threads();
+		CU_ASSERT(io_err == 0);
+		CU_ASSERT(buf[0] == (char)0xa5);
+	}
+	CU_ASSERT(!clone->md_ro);
+	CU_ASSERT(!clone->locked_operation_in_progress);
+
+	spdk_bs_free_io_channel(channel);
+	ut_blob_close_and_delete(bs, clone);
+	spdk_bs_delete_blob(bs, snapshot_id, blob_op_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+	CU_ASSERT(destroyed);
+}
+
+static void
+blob_esnap_delete_snapshot_channel_failure(void)
+{
+	_blob_esnap_delete_snapshot_failure(false, false);
+}
+
+static void
+blob_esnap_delete_snapshot_parent_xattr_failure(void)
+{
+	_blob_esnap_delete_snapshot_failure(true, false);
+}
+
+static void
+blob_esnap_delete_snapshot_extent_write_failure(void)
+{
+	_blob_esnap_delete_snapshot_failure(false, true);
+}
+
+static void
+blob_esnap_snapshot_xattr_failure_keeps_device(void)
+{
+	struct spdk_blob_store *bs = g_bs;
+	struct spdk_blob_opts opts;
+	struct ut_esnap_opts esnap_opts;
+	struct spdk_clone_snapshot_ctx *ctx;
+	struct spdk_blob *origblob, *newblob;
+	struct spdk_bs_dev *back_bs_dev;
+	struct spdk_io_channel *channel;
+	spdk_blob_id orig_id, new_id;
+	uint32_t block_sz = spdk_bs_get_io_unit_size(bs);
+	uint32_t cluster_sz = spdk_bs_get_cluster_size(bs);
+	bool destroyed = false;
+	int result = 0xbad, read_err = 0xbad;
+	char buf[block_sz];
+
+	ut_spdk_blob_opts_init(&opts);
+	ut_esnap_opts_init(block_sz, cluster_sz / block_sz, __func__, &destroyed, &esnap_opts);
+	opts.esnap_id = &esnap_opts;
+	opts.esnap_id_len = sizeof(esnap_opts);
+	opts.num_clusters = 1;
+	origblob = ut_blob_create_and_open(bs, &opts);
+	SPDK_CU_ASSERT_FATAL(origblob != NULL);
+	orig_id = origblob->id;
+	back_bs_dev = origblob->back_bs_dev;
+	SPDK_CU_ASSERT_FATAL(back_bs_dev != NULL);
+	spdk_bs_open_blob(bs, orig_id, blob_op_with_handle_complete, NULL);
+	poll_threads();
+	SPDK_CU_ASSERT_FATAL(g_bserrno == 0 && g_blob == origblob);
+
+	ut_spdk_blob_opts_init(&opts);
+	opts.thin_provision = true;
+	opts.num_clusters = 1;
+	newblob = ut_blob_create_and_open(bs, &opts);
+	SPDK_CU_ASSERT_FATAL(newblob != NULL);
+	new_id = newblob->id;
+	newblob->md_ro = true;
+
+	channel = spdk_bs_alloc_io_channel(bs);
+	SPDK_CU_ASSERT_FATAL(channel != NULL);
+	ctx = calloc(1, sizeof(*ctx));
+	SPDK_CU_ASSERT_FATAL(ctx != NULL);
+	ctx->original.blob = origblob;
+	ctx->new.blob = newblob;
+	ctx->cpl.type = SPDK_BS_CPL_TYPE_BLOB_BASIC;
+	ctx->cpl.u.blob_basic.cb_fn = blob_op_complete;
+	ctx->cpl.u.blob_basic.cb_arg = &result;
+	blob_freeze_io(origblob, blob_op_complete, NULL);
+	poll_threads();
+	SPDK_CU_ASSERT_FATAL(g_bserrno == 0);
+	ctx->frozen = true;
+	bs_snapshot_freeze_done(ctx);
+	poll_threads();
+	CU_ASSERT(result == -EPERM);
+	CU_ASSERT(origblob->back_bs_dev == back_bs_dev);
+	CU_ASSERT(!destroyed);
+
+	spdk_blob_io_read(origblob, channel, buf, 0, 1, blob_op_complete, &read_err);
+	poll_threads();
+	CU_ASSERT(read_err == 0);
+	spdk_bs_free_io_channel(channel);
+	ut_blob_close_and_delete(bs, origblob);
+	spdk_bs_delete_blob(bs, new_id, blob_op_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+	CU_ASSERT(destroyed);
+}
+
+static void
+_blob_snapshot_origblob_sync_failure(bool esnap)
+{
+	struct spdk_blob_store *bs = g_bs;
+	struct spdk_blob_opts opts;
+	struct ut_esnap_opts esnap_opts;
+	struct spdk_clone_snapshot_ctx *ctx;
+	struct spdk_blob *source = NULL, *origblob, *newblob;
+	struct spdk_bs_dev *old_back_bs_dev;
+	struct spdk_io_channel *channel;
+	spdk_blob_id parent_id, orig_id, new_id;
+	spdk_blob_id clones[2];
+	uint64_t cluster_lba;
+	uint32_t block_sz = spdk_bs_get_io_unit_size(bs);
+	const void *value = NULL;
+	size_t value_len;
+	size_t clone_count = SPDK_COUNTOF(clones);
+	bool destroyed = false;
+	int result = 0xbad, io_err = 0xbad;
+	char buf[block_sz];
+
+	ut_spdk_blob_opts_init(&opts);
+	opts.num_clusters = 1;
+	if (esnap) {
+		ut_esnap_opts_init(spdk_bs_get_io_unit_size(bs),
+				   spdk_bs_get_cluster_size(bs) / spdk_bs_get_io_unit_size(bs),
+				   __func__, &destroyed, &esnap_opts);
+		opts.esnap_id = &esnap_opts;
+		opts.esnap_id_len = sizeof(esnap_opts);
+		origblob = ut_blob_create_and_open(bs, &opts);
+	} else {
+		source = ut_blob_create_and_open(bs, &opts);
+		SPDK_CU_ASSERT_FATAL(source != NULL);
+		spdk_bs_create_snapshot(bs, source->id, NULL, blob_op_with_id_complete, NULL);
+		poll_threads();
+		SPDK_CU_ASSERT_FATAL(g_bserrno == 0);
+		parent_id = g_blobid;
+		spdk_bs_create_clone(bs, parent_id, NULL, blob_op_with_id_complete, NULL);
+		poll_threads();
+		SPDK_CU_ASSERT_FATAL(g_bserrno == 0);
+		spdk_bs_open_blob(bs, g_blobid, blob_op_with_handle_complete, NULL);
+		poll_threads();
+		SPDK_CU_ASSERT_FATAL(g_bserrno == 0);
+		origblob = g_blob;
+	}
+	SPDK_CU_ASSERT_FATAL(origblob != NULL);
+	orig_id = origblob->id;
+	parent_id = origblob->parent_id;
+	old_back_bs_dev = origblob->back_bs_dev;
+	SPDK_CU_ASSERT_FATAL(old_back_bs_dev != NULL);
+	channel = spdk_bs_alloc_io_channel(bs);
+	SPDK_CU_ASSERT_FATAL(channel != NULL);
+	memset(buf, 0xa5, sizeof(buf));
+	spdk_blob_io_write(origblob, channel, buf, 0, 1, blob_op_complete, &io_err);
+	poll_threads();
+	SPDK_CU_ASSERT_FATAL(io_err == 0);
+	cluster_lba = origblob->active.clusters[0];
+	SPDK_CU_ASSERT_FATAL(cluster_lba != 0);
+
+	/* The snapshot operation owns another reference to the original blob. */
+	spdk_bs_open_blob(bs, orig_id, blob_op_with_handle_complete, NULL);
+	poll_threads();
+	SPDK_CU_ASSERT_FATAL(g_bserrno == 0 && g_blob == origblob);
+	ut_spdk_blob_opts_init(&opts);
+	opts.thin_provision = true;
+	opts.num_clusters = 1;
+	newblob = ut_blob_create_and_open(bs, &opts);
+	SPDK_CU_ASSERT_FATAL(newblob != NULL);
+	new_id = newblob->id;
+
+	ctx = calloc(1, sizeof(*ctx));
+	SPDK_CU_ASSERT_FATAL(ctx != NULL);
+	ctx->original.blob = origblob;
+	ctx->original.md_ro = origblob->md_ro;
+	ctx->new.blob = newblob;
+	ctx->cpl.type = SPDK_BS_CPL_TYPE_BLOB_BASIC;
+	ctx->cpl.u.blob_basic.cb_fn = blob_op_complete;
+	ctx->cpl.u.blob_basic.cb_arg = &result;
+
+	/* Recreate the state immediately before the original blob's metadata sync. */
+	blob_back_bs_destroy(newblob);
+	newblob->back_bs_dev = old_back_bs_dev;
+	newblob->parent_id = parent_id;
+	newblob->invalid_flags = origblob->invalid_flags;
+	SPDK_CU_ASSERT_FATAL(bs_snapshot_copy_xattr(newblob, origblob,
+			esnap ? BLOB_EXTERNAL_SNAPSHOT_ID : BLOB_SNAPSHOT) == 0);
+	bs_snapshot_swap_cluster_maps(newblob, origblob);
+	spdk_blob_sync_md(newblob, blob_op_complete, NULL);
+	poll_threads();
+	SPDK_CU_ASSERT_FATAL(g_bserrno == 0);
+	if (!esnap) {
+		ctx->original_parent_xattr = bs_snapshot_take_xattr(origblob, BLOB_SNAPSHOT);
+		SPDK_CU_ASSERT_FATAL(ctx->original_parent_xattr != NULL);
+	}
+	SPDK_CU_ASSERT_FATAL(blob_set_xattr(origblob, BLOB_SNAPSHOT, &new_id,
+					    sizeof(new_id), true) == 0);
+	origblob->back_bs_dev = bs_create_blob_bs_dev(newblob);
+	SPDK_CU_ASSERT_FATAL(origblob->back_bs_dev != NULL);
+	if (esnap) {
+		origblob->invalid_flags &= ~SPDK_BLOB_EXTERNAL_SNAPSHOT;
+		ctx->original_parent_xattr = bs_snapshot_take_xattr(origblob,
+							   BLOB_EXTERNAL_SNAPSHOT_ID);
+		SPDK_CU_ASSERT_FATAL(ctx->original_parent_xattr != NULL);
+	}
+	SPDK_CU_ASSERT_FATAL(bs_blob_list_add(newblob) == 0);
+	bs_blob_list_remove(origblob);
+	origblob->parent_id = new_id;
+	blob_set_thin_provision(origblob);
+
+	bs_snapshot_origblob_sync_cpl(ctx, -EIO);
+	poll_threads();
+	CU_ASSERT(result == -EIO);
+	CU_ASSERT(blob_lookup(bs, new_id) == NULL);
+	CU_ASSERT(origblob->open_ref == 1);
+	CU_ASSERT(origblob->parent_id == parent_id);
+	CU_ASSERT(origblob->back_bs_dev == old_back_bs_dev);
+	CU_ASSERT(origblob->active.clusters[0] == cluster_lba);
+	CU_ASSERT(spdk_bit_pool_is_allocated(bs->used_clusters,
+					    bs_lba_to_cluster(bs, cluster_lba)));
+	io_err = 0xbad;
+	memset(buf, 0, sizeof(buf));
+	spdk_blob_io_read(origblob, channel, buf, 0, 1, blob_op_complete, &io_err);
+	poll_threads();
+	CU_ASSERT(io_err == 0);
+	CU_ASSERT(buf[0] == (char)0xa5);
+	CU_ASSERT(blob_get_xattr_value(origblob,
+			esnap ? BLOB_EXTERNAL_SNAPSHOT_ID : BLOB_SNAPSHOT,
+			&value, &value_len, true) == 0);
+	if (!esnap) {
+		CU_ASSERT(value_len == sizeof(parent_id));
+		CU_ASSERT(*(const spdk_blob_id *)value == parent_id);
+		CU_ASSERT(spdk_blob_get_parent_snapshot(bs, orig_id) == parent_id);
+		CU_ASSERT(spdk_blob_get_clones(bs, parent_id, clones, &clone_count) == 0);
+		CU_ASSERT(clone_count == 2);
+		CU_ASSERT(clones[0] == orig_id || clones[1] == orig_id);
+		CU_ASSERT(clones[0] != new_id && clones[1] != new_id);
+	} else {
+		CU_ASSERT(!destroyed);
+	}
+	CU_ASSERT(blob_get_xattr_value(origblob, BLOB_SNAPSHOT, &value, &value_len,
+					true) == (esnap ? -ENOENT : 0));
+
+	spdk_bs_free_io_channel(channel);
+	ut_blob_close_and_delete(bs, origblob);
+	spdk_bs_delete_blob(bs, new_id, blob_op_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+	if (esnap) {
+		CU_ASSERT(destroyed);
+	} else {
+		ut_blob_close_and_delete(bs, source);
+		spdk_bs_delete_blob(bs, parent_id, blob_op_complete, NULL);
+		poll_threads();
+		CU_ASSERT(g_bserrno == 0);
+	}
+}
+
+static void
+blob_esnap_snapshot_origblob_sync_failure(void)
+{
+	_blob_snapshot_origblob_sync_failure(true);
+}
+
+static void
+blob_snapshot_origblob_sync_failure(void)
+{
+	_blob_snapshot_origblob_sync_failure(false);
+}
+
 /*
  * An IO that spans a cluster boundary is split. If it arrives while the parent of an esnap clone
  * is being replaced, it must not create a channel for the old external snapshot on a thread whose
@@ -11807,6 +12364,335 @@ blob_delete_snapshot_resized_clone(void)
 	g_bs = NULL;
 
 	g_phys_blocklen = saved_phys_blocklen;
+}
+
+static uint64_t
+ut_delete_snapshot_no_md_pages_run(uint64_t error_at, int *delete_rc)
+{
+	struct spdk_blob_store *bs;
+	struct spdk_bs_dev *dev;
+	struct spdk_bs_opts bs_opts;
+	struct spdk_blob_opts blob_opts;
+	struct spdk_blob *blob;
+	struct spdk_power_failure_thresholds thresholds = {};
+	struct spdk_io_channel *channel;
+	spdk_blob_id blobid, snapid;
+	uint8_t pattern[3][DEV_BUFFER_BLOCKLEN];
+	uint8_t payload_read[DEV_BUFFER_BLOCKLEN];
+	bool *claimed;
+	uint32_t md_cap, i;
+	uint64_t writes;
+
+	memset(pattern[0], 0xA1, sizeof(pattern[0]));
+	memset(pattern[1], 0xB2, sizeof(pattern[1]));
+	memset(pattern[2], 0xC3, sizeof(pattern[2]));
+
+	dev = init_dev();
+	spdk_bs_opts_init(&bs_opts, sizeof(bs_opts));
+	bs_opts.cluster_sz = 4096;
+	bs_opts.num_md_pages = 256;
+	spdk_bs_init(dev, &bs_opts, bs_op_with_handle_complete, NULL);
+	poll_threads();
+	SPDK_CU_ASSERT_FATAL(g_bserrno == 0);
+	SPDK_CU_ASSERT_FATAL(g_bs != NULL);
+	bs = g_bs;
+	channel = spdk_bs_alloc_io_channel(bs);
+	SPDK_CU_ASSERT_FATAL(channel != NULL);
+
+	ut_spdk_blob_opts_init(&blob_opts);
+	blob_opts.num_clusters = 4;
+	blob_opts.thin_provision = false;
+	blob_opts.use_extent_table = true;
+	blob = ut_blob_create_and_open(bs, &blob_opts);
+	blobid = spdk_blob_get_id(blob);
+
+	/* The snapshot owns the data of clusters 0 and 1. */
+	spdk_blob_io_write(blob, channel, pattern[2], 0, 1, blob_op_complete, NULL);
+	poll_threads();
+	SPDK_CU_ASSERT_FATAL(g_bserrno == 0);
+	spdk_blob_io_write(blob, channel, pattern[1], 1, 1, blob_op_complete, NULL);
+	poll_threads();
+	SPDK_CU_ASSERT_FATAL(g_bserrno == 0);
+
+	spdk_bs_create_snapshot(bs, blobid, NULL, blob_op_with_id_complete, NULL);
+	poll_threads();
+	SPDK_CU_ASSERT_FATAL(g_bserrno == 0);
+	snapid = g_blobid;
+
+	/* Overwriting cluster 0 gives the clone its own extent page for the same slot as the
+	 * snapshot's. */
+	spdk_blob_io_write(blob, channel, pattern[0], 0, 1, blob_op_complete, NULL);
+	poll_threads();
+	SPDK_CU_ASSERT_FATAL(g_bserrno == 0);
+	SPDK_CU_ASSERT_FATAL(blob->active.extent_pages[0] != 0);
+	spdk_blob_close(blob, blob_op_complete, NULL);
+	poll_threads();
+	SPDK_CU_ASSERT_FATAL(g_bserrno == 0);
+
+	/* Leave no free metadata page. */
+	md_cap = spdk_bit_array_capacity(bs->used_md_pages);
+	claimed = calloc(md_cap, sizeof(*claimed));
+	SPDK_CU_ASSERT_FATAL(claimed != NULL);
+	for (i = 1; i < md_cap; i++) {
+		if (!spdk_bit_array_get(bs->used_md_pages, i)) {
+			spdk_bit_array_set(bs->used_md_pages, i);
+			claimed[i] = true;
+		}
+	}
+
+	dev_reset_power_failure_event();
+	/* Count the writes issued by the deletion when no failure is injected. */
+	thresholds.write_threshold = UINT64_MAX;
+	dev_set_power_failure_thresholds(thresholds);
+	if (error_at != 0) {
+		dev_set_write_error_once(error_at);
+	}
+	spdk_bs_delete_blob(bs, snapid, blob_op_complete, NULL);
+	poll_threads();
+	*delete_rc = g_bserrno;
+	writes = g_power_failure_counters.write_counter;
+	dev_reset_power_failure_event();
+
+	for (i = 1; i < md_cap; i++) {
+		if (claimed[i]) {
+			spdk_bit_array_clear(bs->used_md_pages, i);
+		}
+	}
+	free(claimed);
+	spdk_bs_free_io_channel(channel);
+	poll_threads();
+
+	/* The clone must keep its own data and the snapshot's, whichever way the deletion ended. */
+	ut_bs_dirty_load(&bs, &bs_opts);
+	spdk_bs_open_blob(bs, blobid, blob_op_with_handle_complete, NULL);
+	poll_threads();
+	SPDK_CU_ASSERT_FATAL(g_bserrno == 0);
+	blob = g_blob;
+	/* A page left merged on disk would make the clone own the snapshot's clusters. */
+	CU_ASSERT(spdk_blob_get_num_allocated_clusters(blob) ==
+		  (spdk_blob_get_parent_snapshot(bs, blobid) == snapid ? 1 : 4));
+	channel = spdk_bs_alloc_io_channel(bs);
+	SPDK_CU_ASSERT_FATAL(channel != NULL);
+	for (i = 0; i < 2; i++) {
+		memset(payload_read, 0, sizeof(payload_read));
+		spdk_blob_io_read(blob, channel, payload_read, i, 1, blob_op_complete, NULL);
+		poll_threads();
+		CU_ASSERT(g_bserrno == 0);
+		CU_ASSERT(memcmp(pattern[i == 0 ? 0 : 1], payload_read, sizeof(payload_read)) == 0);
+	}
+	spdk_bs_free_io_channel(channel);
+	spdk_blob_close(blob, blob_op_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+
+	spdk_bs_unload(bs, bs_op_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+	g_bs = NULL;
+
+	return writes;
+}
+
+/*
+ * Deleting a snapshot must not fail only because no metadata page is free for a copy of the
+ * clone's extent page, since deleting snapshots is how metadata space is reclaimed.
+ */
+static void
+blob_delete_snapshot_no_free_md_pages(void)
+{
+	uint32_t saved_phys_blocklen = g_phys_blocklen;
+	uint64_t total_writes, error_at;
+	int rc = 0xbad;
+
+	g_phys_blocklen = 4096;
+
+	total_writes = ut_delete_snapshot_no_md_pages_run(0, &rc);
+	CU_ASSERT(rc == 0);
+	SPDK_CU_ASSERT_FATAL(total_writes > 0);
+
+	/* A failed write at any step leaves both blobs' data intact. */
+	for (error_at = 1; error_at <= total_writes; error_at++) {
+		ut_delete_snapshot_no_md_pages_run(error_at, &rc);
+	}
+
+	g_phys_blocklen = saved_phys_blocklen;
+}
+
+static void
+ut_snapshot_chain_setup(struct spdk_blob_store **bs_out, struct spdk_blob **blob_out,
+			spdk_blob_id *snapids, int num_snapshots)
+{
+	struct spdk_bs_dev *dev;
+	struct spdk_blob_store *bs;
+	struct spdk_blob_opts opts;
+	struct spdk_blob *blob;
+	struct spdk_io_channel *channel;
+	uint8_t payload[DEV_BUFFER_BLOCKLEN];
+	int i;
+
+	dev = init_dev();
+	spdk_bs_init(dev, NULL, bs_op_with_handle_complete, NULL);
+	poll_threads();
+	SPDK_CU_ASSERT_FATAL(g_bserrno == 0);
+	SPDK_CU_ASSERT_FATAL(g_bs != NULL);
+	bs = g_bs;
+
+	ut_spdk_blob_opts_init(&opts);
+	opts.num_clusters = 4;
+	opts.thin_provision = true;
+	blob = ut_blob_create_and_open(bs, &opts);
+
+	channel = spdk_bs_alloc_io_channel(bs);
+	SPDK_CU_ASSERT_FATAL(channel != NULL);
+	memset(payload, 0xA5, sizeof(payload));
+	spdk_blob_io_write(blob, channel, payload, 0, 1, blob_op_complete, NULL);
+	poll_threads();
+	SPDK_CU_ASSERT_FATAL(g_bserrno == 0);
+	spdk_bs_free_io_channel(channel);
+
+	for (i = 0; i < num_snapshots; i++) {
+		spdk_bs_create_snapshot(bs, blob->id, NULL, blob_op_with_id_complete, NULL);
+		poll_threads();
+		SPDK_CU_ASSERT_FATAL(g_bserrno == 0);
+		snapids[i] = g_blobid;
+	}
+
+	*bs_out = bs;
+	*blob_out = blob;
+}
+
+static uint64_t
+ut_delete_middle_snapshot_run(uint64_t error_at, int *delete_rc)
+{
+	struct spdk_blob_store *bs;
+	struct spdk_blob *blob;
+	struct spdk_power_failure_thresholds thresholds = {};
+	spdk_blob_id snapids[2];
+	uint64_t writes;
+
+	/* grandparent <- snapids[1] <- blob */
+	ut_snapshot_chain_setup(&bs, &blob, snapids, 2);
+
+	dev_reset_power_failure_event();
+	thresholds.write_threshold = UINT64_MAX;
+	dev_set_power_failure_thresholds(thresholds);
+	if (error_at != 0) {
+		dev_set_write_error_once(error_at);
+	}
+	spdk_bs_delete_blob(bs, snapids[1], blob_op_complete, NULL);
+	poll_threads();
+	*delete_rc = g_bserrno;
+	writes = g_power_failure_counters.write_counter;
+	dev_reset_power_failure_event();
+
+	/* The clone and the deleted snapshot must not both release their parent device. */
+	spdk_blob_close(blob, blob_op_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+	spdk_bs_unload(bs, bs_op_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+	g_bs = NULL;
+
+	return writes;
+}
+
+static void
+blob_delete_middle_snapshot_failure(void)
+{
+	uint64_t total_writes, error_at;
+	int rc = 0xbad;
+
+	total_writes = ut_delete_middle_snapshot_run(0, &rc);
+	CU_ASSERT(rc == 0);
+	SPDK_CU_ASSERT_FATAL(total_writes > 0);
+
+	for (error_at = 1; error_at <= total_writes; error_at++) {
+		ut_delete_middle_snapshot_run(error_at, &rc);
+	}
+}
+
+/* A failed delete must not leave its pending-removal marker on a snapshot that is kept. */
+static uint64_t
+ut_delete_snapshot_marker_run(uint64_t error_at, int *delete_rc)
+{
+	struct spdk_blob_store *bs;
+	struct spdk_blob *blob, *snapshot;
+	struct spdk_power_failure_thresholds thresholds = {};
+	const void *value;
+	size_t value_len;
+	spdk_blob_id snapid, blobid;
+	uint64_t writes;
+
+	ut_snapshot_chain_setup(&bs, &blob, &snapid, 1);
+	blobid = blob->id;
+
+	dev_reset_power_failure_event();
+	thresholds.write_threshold = UINT64_MAX;
+	dev_set_power_failure_thresholds(thresholds);
+	if (error_at != 0) {
+		dev_set_write_error_once(error_at);
+	}
+	spdk_bs_delete_blob(bs, snapid, blob_op_complete, NULL);
+	poll_threads();
+	*delete_rc = g_bserrno;
+	writes = g_power_failure_counters.write_counter;
+	dev_reset_power_failure_event();
+
+	if (*delete_rc != 0 && blob->parent_id == snapid) {
+		spdk_bs_open_blob(bs, snapid, blob_op_with_handle_complete, NULL);
+		poll_threads();
+		SPDK_CU_ASSERT_FATAL(g_bserrno == 0);
+		snapshot = g_blob;
+		CU_ASSERT(blob_get_xattr_value(snapshot, SNAPSHOT_PENDING_REMOVAL, &value, &value_len,
+					       true) == -ENOENT);
+		spdk_blob_close(snapshot, blob_op_complete, NULL);
+		poll_threads();
+		CU_ASSERT(g_bserrno == 0);
+
+		/* A newer snapshot of the clone must not let a stale marker delete the old one. */
+		spdk_blob_close(blob, blob_op_complete, NULL);
+		poll_threads();
+		CU_ASSERT(g_bserrno == 0);
+		spdk_bs_create_snapshot(bs, blobid, NULL, blob_op_with_id_complete, NULL);
+		poll_threads();
+		CU_ASSERT(g_bserrno == 0);
+		ut_bs_dirty_load(&bs, NULL);
+		spdk_bs_open_blob(bs, snapid, blob_op_with_handle_complete, NULL);
+		poll_threads();
+		CU_ASSERT(g_bserrno == 0);
+		if (g_bserrno == 0) {
+			spdk_blob_close(g_blob, blob_op_complete, NULL);
+			poll_threads();
+			CU_ASSERT(g_bserrno == 0);
+		}
+	} else {
+		spdk_blob_close(blob, blob_op_complete, NULL);
+		poll_threads();
+		CU_ASSERT(g_bserrno == 0);
+	}
+
+	spdk_bs_unload(bs, bs_op_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+	g_bs = NULL;
+
+	return writes;
+}
+
+static void
+blob_delete_snapshot_failure_removes_marker(void)
+{
+	uint64_t total_writes, error_at;
+	int rc = 0xbad;
+
+	total_writes = ut_delete_snapshot_marker_run(0, &rc);
+	CU_ASSERT(rc == 0);
+	SPDK_CU_ASSERT_FATAL(total_writes > 0);
+
+	for (error_at = 1; error_at <= total_writes; error_at++) {
+		ut_delete_snapshot_marker_run(error_at, &rc);
+	}
 }
 
 static void
@@ -13310,6 +14196,7 @@ main(int argc, char **argv)
 		CU_ADD_TEST(suite, blobstore_clean_power_failure);
 		CU_ADD_TEST(suite, blob_delete_snapshot_power_failure);
 		CU_ADD_TEST(suite, blob_create_snapshot_power_failure);
+		CU_ADD_TEST(suite, blob_create_snapshot_origblob_sync_failure_power_failure);
 		CU_ADD_TEST(suite_bs, blob_inflate_rw);
 		CU_ADD_TEST(suite_bs, blob_inflate_unmap);
 		CU_ADD_TEST(suite_bs, blob_snapshot_freeze_io);
@@ -13356,11 +14243,20 @@ main(int argc, char **argv)
 		CU_ADD_TEST(suite_esnap_bs, blob_esnap_clone_inflate_inflight);
 		CU_ADD_TEST(suite_esnap_bs, blob_esnap_clone_decouple_inflight);
 		CU_ADD_TEST(suite_esnap_bs, blob_esnap_snapshot_inflight_read);
+		CU_ADD_TEST(suite_esnap_bs, blob_esnap_delete_snapshot_channel_failure);
+		CU_ADD_TEST(suite_esnap_bs, blob_esnap_delete_snapshot_parent_xattr_failure);
+		CU_ADD_TEST(suite_esnap_bs, blob_esnap_delete_snapshot_extent_write_failure);
+		CU_ADD_TEST(suite_esnap_bs, blob_esnap_snapshot_xattr_failure_keeps_device);
+		CU_ADD_TEST(suite_esnap_bs, blob_esnap_snapshot_origblob_sync_failure);
+		CU_ADD_TEST(suite_bs, blob_snapshot_origblob_sync_failure);
 		CU_ADD_TEST(suite_esnap_bs, blob_esnap_set_parent_split_io);
 		CU_ADD_TEST(suite_esnap_bs, blob_esnap_hotplug_split_io);
 		CU_ADD_TEST(suite_blob, blob_is_degraded);
 		CU_ADD_TEST(suite_bs, blob_clone_resize);
 		CU_ADD_TEST(suite, blob_delete_snapshot_resized_clone);
+		CU_ADD_TEST(suite, blob_delete_snapshot_no_free_md_pages);
+		CU_ADD_TEST(suite, blob_delete_middle_snapshot_failure);
+		CU_ADD_TEST(suite, blob_delete_snapshot_failure_removes_marker);
 		CU_ADD_TEST(suite, blob_esnap_clone_resize);
 		CU_ADD_TEST(suite_bs, blob_shallow_copy);
 		CU_ADD_TEST(suite_bs, blob_deep_copy);

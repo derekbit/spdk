@@ -50,7 +50,13 @@ static struct spdk_power_failure_thresholds g_power_failure_thresholds = {};
 
 static uint64_t g_power_failure_rc;
 
+/* Fail one write with -EIO after it has been applied to the device. */
+static uint64_t g_dev_write_error_at;
+static uint64_t g_dev_write_error_counter;
+static struct spdk_bs_dev_cb_args *g_dev_write_error_cb_args;
+
 void dev_reset_power_failure_event(void);
+void dev_set_write_error_once(uint64_t nth_write);
 void dev_reset_power_failure_counters(void);
 void dev_set_power_failure_thresholds(struct spdk_power_failure_thresholds thresholds);
 
@@ -60,6 +66,17 @@ dev_reset_power_failure_event(void)
 	memset(&g_power_failure_counters, 0, sizeof(g_power_failure_counters));
 	memset(&g_power_failure_thresholds, 0, sizeof(g_power_failure_thresholds));
 	g_power_failure_rc = 0;
+	g_dev_write_error_at = 0;
+	g_dev_write_error_counter = 0;
+	g_dev_write_error_cb_args = NULL;
+}
+
+void
+dev_set_write_error_once(uint64_t nth_write)
+{
+	g_dev_write_error_at = nth_write;
+	g_dev_write_error_counter = 0;
+	g_dev_write_error_cb_args = NULL;
 }
 
 void
@@ -108,8 +125,14 @@ static void
 dev_complete_cb(void *arg)
 {
 	struct spdk_bs_dev_cb_args *cb_args = arg;
+	uint64_t rc = g_power_failure_rc;
 
-	cb_args->cb_fn(cb_args->channel, cb_args->cb_arg, g_power_failure_rc);
+	if (cb_args == g_dev_write_error_cb_args) {
+		g_dev_write_error_cb_args = NULL;
+		rc = -EIO;
+	}
+
+	cb_args->cb_fn(cb_args->channel, cb_args->cb_arg, rc);
 }
 
 static void
@@ -177,6 +200,9 @@ dev_write(struct spdk_bs_dev *dev, struct spdk_io_channel *channel, void *payloa
 
 		memcpy(&g_dev_buffer[offset], payload, length);
 		g_dev_write_bytes += length;
+		if (g_dev_write_error_at != 0 && ++g_dev_write_error_counter == g_dev_write_error_at) {
+			g_dev_write_error_cb_args = cb_args;
+		}
 	} else {
 		g_power_failure_rc = -EIO;
 	}
