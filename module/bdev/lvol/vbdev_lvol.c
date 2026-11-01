@@ -495,7 +495,16 @@ _vbdev_lvs_remove_lvol_cb(void *cb_arg, int lvolerrno)
 	struct spdk_lvol *lvol;
 
 	if (lvolerrno != 0) {
-		SPDK_DEBUGLOG(vbdev_lvol, "Lvol removed with errno %d\n", lvolerrno);
+		struct spdk_lvs_req *req = lvs_bdev->req;
+
+		SPDK_ERRLOG("Lvol removal failed with errno %d\n", lvolerrno);
+		lvs_bdev->removal_in_progress = false;
+		lvs_bdev->req = NULL;
+		if (req->cb_fn != NULL) {
+			req->cb_fn(req->cb_arg, lvolerrno);
+		}
+		free(req);
+		return;
 	}
 
 	if (TAILQ_EMPTY(&lvs->lvols)) {
@@ -715,6 +724,7 @@ _vbdev_lvol_destruct_cb(void *ctx, int lvolerrno)
 	struct lvol_bdev *lvol_bdev = ctx;
 	struct lvol_store_bdev *lvs_bdev = lvol_bdev->lvs_bdev;
 
+	lvol_bdev->lvol->bdev = NULL;
 	spdk_io_device_unregister(lvol_bdev->lvol, NULL);
 
 	if (g_shutdown_started && _vbdev_lvs_are_lvols_closed(lvs_bdev->lvs)) {
@@ -757,6 +767,7 @@ _vbdev_lvol_destroy_cb(void *cb_arg, int bdeverrno)
 		return;
 	}
 
+	lvol->bdev = NULL;
 	spdk_lvol_destroy(lvol, ctx->cb_fn, ctx->cb_arg);
 	free(ctx);
 }
@@ -780,6 +791,10 @@ _vbdev_lvol_destroy(struct spdk_lvol *lvol, spdk_lvol_op_complete cb_fn, void *c
 		/* throw an error */
 		SPDK_ERRLOG("Cannot delete lvol\n");
 		cb_fn(cb_arg, -EPERM);
+		return;
+	}
+	if (lvol->bdev == NULL && lvol->ref_count == 0) {
+		spdk_lvol_destroy(lvol, cb_fn, cb_arg);
 		return;
 	}
 
@@ -815,6 +830,10 @@ vbdev_lvol_destroy(struct spdk_lvol *lvol, spdk_lvol_op_complete cb_fn, void *cb
 		SPDK_DEBUGLOG(vbdev_lvol, "lvol %s: lvolstore is being removed\n",
 			      lvol->unique_id);
 		cb_fn(cb_arg, -ENODEV);
+		return;
+	}
+	if (lvol->bdev == NULL && lvol->ref_count == 0) {
+		spdk_lvol_destroy(lvol, cb_fn, cb_arg);
 		return;
 	}
 

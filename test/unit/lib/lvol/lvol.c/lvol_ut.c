@@ -461,11 +461,13 @@ spdk_bs_delete_blob(struct spdk_blob_store *bs, spdk_blob_id blobid,
 {
 	struct spdk_blob *blob;
 
-	TAILQ_FOREACH(blob, &bs->blobs, link) {
-		if (blob->id == blobid) {
-			TAILQ_REMOVE(&bs->blobs, blob, link);
-			free(blob);
-			break;
+	if (g_remove_rc == 0) {
+		TAILQ_FOREACH(blob, &bs->blobs, link) {
+			if (blob->id == blobid) {
+				TAILQ_REMOVE(&bs->blobs, blob, link);
+				free(blob);
+				break;
+			}
 		}
 	}
 
@@ -1150,8 +1152,12 @@ lvol_destroy_fail(void)
 	g_remove_rc = -1;
 	spdk_lvol_destroy(g_lvol, op_complete, NULL);
 	CU_ASSERT(g_lvserrno != 0);
-	CU_ASSERT(TAILQ_EMPTY(&g_lvol_store->lvols));
+	CU_ASSERT(!TAILQ_EMPTY(&g_lvol_store->lvols));
+	CU_ASSERT(!g_lvol->action_in_progress);
 	g_remove_rc = 0;
+	spdk_lvol_destroy(g_lvol, op_complete, NULL);
+	CU_ASSERT(g_lvserrno == 0);
+	CU_ASSERT(TAILQ_EMPTY(&g_lvol_store->lvols));
 
 	g_lvserrno = -1;
 	rc = spdk_lvs_unload(g_lvol_store, op_complete, NULL);
