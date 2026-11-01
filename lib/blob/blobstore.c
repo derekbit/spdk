@@ -4189,6 +4189,7 @@ bs_blob_list_add(struct spdk_blob *blob)
 	spdk_blob_id snapshot_id;
 	struct spdk_blob_list *snapshot_entry = NULL;
 	struct spdk_blob_list *clone_entry = NULL;
+	bool snapshot_entry_added = false;
 
 	assert(blob != NULL);
 
@@ -4208,6 +4209,7 @@ bs_blob_list_add(struct spdk_blob *blob)
 		snapshot_entry->id = snapshot_id;
 		TAILQ_INIT(&snapshot_entry->clones);
 		TAILQ_INSERT_TAIL(&blob->bs->snapshots, snapshot_entry, link);
+		snapshot_entry_added = true;
 	} else {
 		TAILQ_FOREACH(clone_entry, &snapshot_entry->clones, link) {
 			if (clone_entry->id == blob->id) {
@@ -4220,6 +4222,10 @@ bs_blob_list_add(struct spdk_blob *blob)
 		/* Clone not found */
 		clone_entry = calloc(1, sizeof(struct spdk_blob_list));
 		if (clone_entry == NULL) {
+			if (snapshot_entry_added) {
+				TAILQ_REMOVE(&blob->bs->snapshots, snapshot_entry, link);
+				free(snapshot_entry);
+			}
 			return -ENOMEM;
 		}
 		clone_entry->id = blob->id;
@@ -8781,6 +8787,9 @@ struct set_parent_ctx {
 	bool			blob_md_ro;
 
 	struct blob_parent	parent;
+	struct spdk_bs_dev	*new_back_bs_dev;
+	/* The blob's back_bs_dev now owns the snapshot's open reference. */
+	bool			back_bs_dev_installed;
 };
 
 static void
@@ -8807,7 +8816,7 @@ bs_set_parent_close_snapshot(void *cb_arg, int bserrno)
 {
 	struct set_parent_ctx *ctx = cb_arg;
 
-	if (ctx->bserrno != 0) {
+	if (ctx->bserrno != 0 && !ctx->back_bs_dev_installed) {
 		spdk_blob_close(ctx->parent.u.snapshot.blob, bs_set_parent_cleanup_finish, ctx);
 		return;
 	}
@@ -8848,27 +8857,45 @@ bs_set_parent_set_back_bs_dev_done(void *cb_arg, int bserrno)
 	struct spdk_blob *blob = ctx->blob;
 
 	if (bserrno != 0) {
+		free(ctx->new_back_bs_dev);
+		ctx->new_back_bs_dev = NULL;
 		SPDK_ERRLOG("error %d setting back_bs_dev\n", bserrno);
 		ctx->bserrno = bserrno;
 		bs_set_parent_close_blob(ctx, bserrno);
 		return;
 	}
 
+	ctx->new_back_bs_dev = NULL;
+	ctx->back_bs_dev_installed = true;
 	spdk_blob_sync_md(blob, bs_set_parent_close_blob, ctx);
 }
 
 static int
 bs_set_parent_refs(struct spdk_blob *blob, struct blob_parent *parent)
 {
+	uint64_t old_invalid_flags = blob->invalid_flags;
+	spdk_blob_id old_parent_id = blob->parent_id;
 	int rc;
 
-	bs_blob_list_remove(blob);
+	/* Reserve the new clone-list entry before changing the blob's parent or xattrs. */
+	blob->parent_id = parent->u.snapshot.id;
+	rc = bs_blob_list_add(blob);
+	blob->parent_id = old_parent_id;
+	if (rc != 0) {
+		return rc;
+	}
 
 	rc = blob_set_xattr(blob, BLOB_SNAPSHOT, &parent->u.snapshot.id, sizeof(spdk_blob_id), true);
 	if (rc != 0) {
+		blob->invalid_flags = old_invalid_flags;
+		blob->parent_id = parent->u.snapshot.id;
+		bs_blob_list_remove(blob);
+		blob->parent_id = old_parent_id;
 		SPDK_ERRLOG("error %d setting snapshot xattr\n", rc);
 		return rc;
 	}
+
+	bs_blob_list_remove(blob);
 	blob->parent_id = parent->u.snapshot.id;
 
 	if (blob_is_esnap_clone(blob)) {
@@ -8876,8 +8903,6 @@ bs_set_parent_refs(struct spdk_blob *blob, struct blob_parent *parent)
 		blob->invalid_flags &= ~SPDK_BLOB_EXTERNAL_SNAPSHOT;
 		blob_remove_xattr(blob, BLOB_EXTERNAL_SNAPSHOT_ID, true);
 	}
-
-	bs_blob_list_add(blob);
 
 	return 0;
 }
@@ -8928,6 +8953,11 @@ bs_set_parent_snapshot_open_cpl(void *cb_arg, struct spdk_blob *snapshot, int bs
 	blob->md_ro = false;
 
 	back_bs_dev = bs_create_blob_bs_dev(snapshot);
+	if (back_bs_dev == NULL) {
+		bs_set_parent_close_blob(ctx, -ENOMEM);
+		return;
+	}
+	ctx->new_back_bs_dev = back_bs_dev;
 
 	blob_set_back_bs_dev(blob, back_bs_dev, bs_set_parent_refs, &ctx->parent,
 			     bs_set_parent_set_back_bs_dev_done,
@@ -9057,21 +9087,23 @@ bs_set_external_parent_unfrozen(void *cb_arg, int bserrno)
 static int
 bs_set_external_parent_refs(struct spdk_blob *blob, struct blob_parent *parent)
 {
+	uint64_t old_invalid_flags = blob->invalid_flags;
+	bool was_clone = spdk_blob_is_clone(blob);
 	int rc;
-
-	bs_blob_list_remove(blob);
-
-	if (spdk_blob_is_clone(blob)) {
-		/* Remove the xattr that references the snapshot */
-		blob->parent_id = SPDK_BLOBID_INVALID;
-		blob_remove_xattr(blob, BLOB_SNAPSHOT, true);
-	}
 
 	rc = blob_set_xattr(blob, BLOB_EXTERNAL_SNAPSHOT_ID, parent->u.esnap.id,
 			    parent->u.esnap.id_len, true);
 	if (rc != 0) {
+		blob->invalid_flags = old_invalid_flags;
 		SPDK_ERRLOG("error %d setting external snapshot xattr\n", rc);
 		return rc;
+	}
+
+	bs_blob_list_remove(blob);
+	if (was_clone) {
+		/* Remove the xattr that references the snapshot */
+		blob->parent_id = SPDK_BLOBID_INVALID;
+		blob_remove_xattr(blob, BLOB_SNAPSHOT, true);
 	}
 	blob->invalid_flags |= SPDK_BLOB_EXTERNAL_SNAPSHOT;
 	blob->parent_id = SPDK_BLOBID_EXTERNAL_SNAPSHOT;
@@ -9092,7 +9124,7 @@ bs_set_external_parent_blob_open_cpl(void *cb_arg, struct spdk_blob *blob, int b
 	if (bserrno != 0) {
 		SPDK_ERRLOG("blob open error %d\n", bserrno);
 		ctx->bserrno = bserrno;
-		bs_set_parent_cleanup_finish(ctx, 0);
+		bs_set_external_parent_cleanup_finish(ctx, 0);
 		return;
 	}
 
@@ -9139,6 +9171,12 @@ spdk_bs_blob_set_external_parent(struct spdk_blob_store *bs, spdk_blob_id blob_i
 {
 	struct set_parent_ctx *ctx;
 	uint64_t esnap_dev_size, cluster_sz;
+
+	if (esnap_id_len > UINT16_MAX) {
+		SPDK_ERRLOG("esnap id length %" PRIu32 " is too long\n", esnap_id_len);
+		cb_fn(cb_arg, -EINVAL);
+		return;
+	}
 
 	if (sizeof(blob_id) == esnap_id_len && memcmp(&blob_id, esnap_id, sizeof(blob_id)) == 0) {
 		SPDK_ERRLOG("blob id and external snapshot id cannot be the same\n");
@@ -12385,10 +12423,6 @@ blob_frozen_set_back_bs_dev(void *_ctx, struct spdk_blob *blob, int bserrno)
 		return;
 	}
 
-	if (blob->back_bs_dev != NULL) {
-		blob_unref_back_bs_dev(blob);
-	}
-
 	if (ctx->parent_refs_cb_fn) {
 		rc = ctx->parent_refs_cb_fn(blob, ctx->parent_refs_cb_arg);
 		if (rc != 0) {
@@ -12396,6 +12430,10 @@ blob_frozen_set_back_bs_dev(void *_ctx, struct spdk_blob *blob, int bserrno)
 			blob_unfreeze_io_with_ctx(blob, ctx->unfreeze_ctx, blob_set_back_bs_dev_done, ctx);
 			return;
 		}
+	}
+
+	if (blob->back_bs_dev != NULL) {
+		blob_unref_back_bs_dev(blob);
 	}
 
 	SPDK_NOTICELOG("blob 0x%" PRIx64 ": hotplugged back_bs_dev\n", blob->id);

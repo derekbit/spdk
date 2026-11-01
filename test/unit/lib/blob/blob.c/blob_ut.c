@@ -12695,6 +12695,68 @@ blob_delete_snapshot_failure_removes_marker(void)
 	}
 }
 
+static uint64_t
+ut_set_parent_run(uint64_t error_at, int *set_parent_rc)
+{
+	struct spdk_blob_store *bs;
+	struct spdk_blob *source, *blob;
+	struct spdk_blob_opts opts;
+	struct spdk_power_failure_thresholds thresholds = {};
+	spdk_blob_id snapid;
+	uint64_t writes;
+
+	ut_snapshot_chain_setup(&bs, &source, &snapid, 1);
+	ut_spdk_blob_opts_init(&opts);
+	opts.num_clusters = 4;
+	opts.thin_provision = true;
+	blob = ut_blob_create_and_open(bs, &opts);
+
+	dev_reset_power_failure_event();
+	thresholds.write_threshold = UINT64_MAX;
+	dev_set_power_failure_thresholds(thresholds);
+	if (error_at != 0) {
+		dev_set_write_error_once(error_at);
+	}
+	spdk_bs_blob_set_parent(bs, blob->id, snapid, bs_op_complete, NULL);
+	poll_threads();
+	*set_parent_rc = g_bserrno;
+	writes = g_power_failure_counters.write_counter;
+	dev_reset_power_failure_event();
+
+	/* The blob's new backing device owns the snapshot's reference until the blob closes. */
+	if (blob->parent_id == snapid) {
+		CU_ASSERT(blob_lookup(bs, snapid) != NULL);
+	}
+
+	spdk_blob_close(blob, blob_op_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+	spdk_blob_close(source, blob_op_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+	spdk_bs_unload(bs, bs_op_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+	g_bs = NULL;
+
+	return writes;
+}
+
+static void
+blob_set_parent_sync_failure(void)
+{
+	uint64_t total_writes, error_at;
+	int rc = 0xbad;
+
+	total_writes = ut_set_parent_run(0, &rc);
+	CU_ASSERT(rc == 0);
+	SPDK_CU_ASSERT_FATAL(total_writes > 0);
+
+	for (error_at = 1; error_at <= total_writes; error_at++) {
+		ut_set_parent_run(error_at, &rc);
+	}
+}
+
 static void
 blob_esnap_clone_resize(void)
 {
@@ -13516,6 +13578,7 @@ blob_set_external_parent(void)
 	struct spdk_bs_dev *esnap_dev1, *esnap_dev2, *esnap_dev3;
 	const void *esnap_id;
 	size_t esnap_id_len;
+	uint8_t *oversized_id;
 	int rc;
 
 	cluster_sz = spdk_bs_get_cluster_size(bs);
@@ -13535,6 +13598,14 @@ blob_set_external_parent(void)
 	SPDK_CU_ASSERT_FATAL(blob1 != NULL);
 	blobid1 = spdk_blob_get_id(blob1);
 	CU_ASSERT(spdk_blob_is_esnap_clone(blob1));
+	oversized_id = calloc(1, UINT16_MAX + 1);
+	SPDK_CU_ASSERT_FATAL(oversized_id != NULL);
+	spdk_bs_blob_set_external_parent(bs, blobid1, esnap_dev1, oversized_id, UINT16_MAX + 1,
+					 blob_op_complete, NULL);
+	CU_ASSERT(g_bserrno == -EINVAL);
+	CU_ASSERT(spdk_blob_get_esnap_id(blob1, &esnap_id, &esnap_id_len) == 0);
+	CU_ASSERT(esnap_id_len == sizeof(esnap_opts));
+	free(oversized_id);
 
 	/* Call set_esternal_parent with blobid and esnapid the same */
 	spdk_bs_blob_set_external_parent(bs, blobid1, esnap_dev1, &blobid1, sizeof(blobid1),
@@ -13550,6 +13621,11 @@ blob_set_external_parent(void)
 	/* Call set_external_parent with a blob and its parent esnap */
 	esnap_dev1->blocklen = block_sz;
 	esnap_dev1->blockcnt = esnap_num_blocks;
+	spdk_bs_blob_set_external_parent(bs, SPDK_BLOBID_INVALID, esnap_dev1,
+					 opts.esnap_id, opts.esnap_id_len, blob_op_complete, NULL);
+	poll_threads();
+	CU_ASSERT(g_bserrno != 0);
+
 	spdk_bs_blob_set_external_parent(bs, blobid1, esnap_dev1, opts.esnap_id, opts.esnap_id_len,
 					 blob_op_complete, NULL);
 	poll_threads();
@@ -13582,6 +13658,7 @@ blob_set_external_parent(void)
 	CU_ASSERT(rc == 0 && esnap_id_len == sizeof(esnap_opts2) &&
 		  memcmp(esnap_id, &esnap_opts2, esnap_id_len) == 0);
 	CU_ASSERT(blob2->parent_id == SPDK_BLOBID_EXTERNAL_SNAPSHOT);
+	CU_ASSERT(blob_get_xattr_value(blob2, BLOB_SNAPSHOT, &esnap_id, &esnap_id_len, true) == -ENOENT);
 
 	/* Create a not thin-provisioned blob that is not a clone */
 	ut_spdk_blob_opts_init(&opts);
@@ -13626,6 +13703,113 @@ blob_set_external_parent(void)
 	ut_blob_close_and_delete(bs, blob1);
 	spdk_bs_delete_blob(bs, snapshotid, blob_op_complete, NULL);
 	dev_destroy(esnap_dev1);
+	poll_threads();
+	CU_ASSERT(g_bserrno == 0);
+}
+
+static void
+blob_esnap_set_external_parent_xattr_failure(void)
+{
+	struct spdk_blob_store *bs = g_bs;
+	struct spdk_blob_opts opts;
+	struct ut_esnap_opts old_opts, new_opts;
+	struct spdk_blob *blob;
+	struct spdk_bs_dev *new_dev;
+	struct ut_esnap_dev *old_dev;
+	struct spdk_io_channel *channel;
+	const void *esnap_id;
+	size_t esnap_id_len;
+	spdk_blob_id blobid;
+	bool old_destroyed = false, new_destroyed = false;
+	int read_err = 0xbad, set_err = 0xbad, close_err = 0xbad;
+	uint32_t block_sz = spdk_bs_get_io_unit_size(bs);
+	uint32_t cluster_sz = spdk_bs_get_cluster_size(bs);
+	char buf[block_sz];
+	uint8_t oversized_id[SPDK_BS_MAX_DESC_SIZE] = {};
+
+	ut_spdk_blob_opts_init(&opts);
+	ut_esnap_opts_init(block_sz, cluster_sz * 2 / block_sz, __func__, &old_destroyed, &old_opts);
+	opts.esnap_id = &old_opts;
+	opts.esnap_id_len = sizeof(old_opts);
+	opts.num_clusters = 2;
+	blob = ut_blob_create_and_open(bs, &opts);
+	SPDK_CU_ASSERT_FATAL(blob != NULL);
+	blobid = spdk_blob_get_id(blob);
+	old_dev = (struct ut_esnap_dev *)blob->back_bs_dev;
+	channel = spdk_bs_alloc_io_channel(bs);
+	SPDK_CU_ASSERT_FATAL(channel != NULL);
+	spdk_blob_io_read(blob, channel, buf, 0, 1, blob_op_complete, &read_err);
+	poll_threads();
+	CU_ASSERT(read_err == 0);
+
+	ut_esnap_opts_init(block_sz, cluster_sz * 2 / block_sz, "replacement", &new_destroyed, &new_opts);
+	new_dev = ut_esnap_dev_alloc(&new_opts);
+	SPDK_CU_ASSERT_FATAL(new_dev != NULL);
+	spdk_bs_blob_set_external_parent(bs, blobid, new_dev, oversized_id, sizeof(oversized_id),
+					 blob_op_complete, &set_err);
+	poll_threads();
+	CU_ASSERT(set_err == -ENOMEM);
+	SPDK_CU_ASSERT_FATAL(!old_destroyed);
+	SPDK_CU_ASSERT_FATAL(blob->back_bs_dev == &old_dev->bs_dev);
+	CU_ASSERT(spdk_blob_is_esnap_clone(blob));
+	CU_ASSERT(spdk_blob_get_esnap_id(blob, &esnap_id, &esnap_id_len) == 0);
+	CU_ASSERT(esnap_id_len == sizeof(old_opts));
+	CU_ASSERT(memcmp(esnap_id, &old_opts, sizeof(old_opts)) == 0);
+
+	read_err = 0xbad;
+	spdk_blob_io_read(blob, channel, buf, 0, 1, blob_op_complete, &read_err);
+	poll_threads();
+	CU_ASSERT(read_err == 0);
+	spdk_blob_close(blob, blob_op_complete, &close_err);
+	poll_threads();
+	CU_ASSERT(close_err == 0);
+	CU_ASSERT(old_destroyed);
+	spdk_bs_free_io_channel(channel);
+	new_dev->destroy(new_dev);
+	poll_threads();
+	CU_ASSERT(new_destroyed);
+}
+
+static void
+blob_set_parent_refs_xattr_failure(void)
+{
+	struct spdk_blob_store *bs = g_bs;
+	struct spdk_blob_opts opts;
+	struct blob_parent parent = {};
+	struct spdk_blob *source, *child;
+	spdk_blob_id snapshotid, childid, clones[2];
+	size_t clone_count = SPDK_COUNTOF(clones);
+	const void *value;
+	size_t value_len;
+	int rc;
+
+	ut_spdk_blob_opts_init(&opts);
+	source = ut_blob_create_and_open(bs, &opts);
+	SPDK_CU_ASSERT_FATAL(source != NULL);
+	spdk_bs_create_snapshot(bs, spdk_blob_get_id(source), NULL, blob_op_with_id_complete, NULL);
+	poll_threads();
+	SPDK_CU_ASSERT_FATAL(g_bserrno == 0);
+	snapshotid = g_blobid;
+
+	ut_spdk_blob_opts_init(&opts);
+	opts.thin_provision = true;
+	child = ut_blob_create_and_open(bs, &opts);
+	SPDK_CU_ASSERT_FATAL(child != NULL);
+	childid = spdk_blob_get_id(child);
+	parent.u.snapshot.id = snapshotid;
+	child->md_ro = true;
+	rc = bs_set_parent_refs(child, &parent);
+	child->md_ro = false;
+	CU_ASSERT(rc == -EPERM);
+	CU_ASSERT(child->parent_id == SPDK_BLOBID_INVALID);
+	CU_ASSERT(blob_get_xattr_value(child, BLOB_SNAPSHOT, &value, &value_len, true) == -ENOENT);
+	CU_ASSERT(spdk_blob_get_clones(bs, snapshotid, clones, &clone_count) == 0);
+	CU_ASSERT(clone_count == 1);
+	CU_ASSERT(clones[0] != childid);
+
+	ut_blob_close_and_delete(bs, child);
+	ut_blob_close_and_delete(bs, source);
+	spdk_bs_delete_blob(bs, snapshotid, blob_op_complete, NULL);
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
 }
@@ -14257,12 +14441,15 @@ main(int argc, char **argv)
 		CU_ADD_TEST(suite, blob_delete_snapshot_no_free_md_pages);
 		CU_ADD_TEST(suite, blob_delete_middle_snapshot_failure);
 		CU_ADD_TEST(suite, blob_delete_snapshot_failure_removes_marker);
+		CU_ADD_TEST(suite, blob_set_parent_sync_failure);
 		CU_ADD_TEST(suite, blob_esnap_clone_resize);
 		CU_ADD_TEST(suite_bs, blob_shallow_copy);
 		CU_ADD_TEST(suite_bs, blob_deep_copy);
 		CU_ADD_TEST(suite_bs, blob_range_shallow_copy);
 		CU_ADD_TEST(suite_esnap_bs, blob_set_parent);
 		CU_ADD_TEST(suite_esnap_bs, blob_set_external_parent);
+		CU_ADD_TEST(suite_esnap_bs, blob_esnap_set_external_parent_xattr_failure);
+		CU_ADD_TEST(suite_esnap_bs, blob_set_parent_refs_xattr_failure);
 		CU_ADD_TEST(suite_bs, snapshot_checksum);
 		CU_ADD_TEST(suite_bs, snapshot_range_checksum);
 		CU_ADD_TEST(suite_bs, snapshot_range_checksum_deleted);
