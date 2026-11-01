@@ -3184,9 +3184,16 @@ bs_grow_live_size(uint64_t new_blockcnt)
 	 */
 	dev->blockcnt = new_blockcnt;
 	bdev_size = dev->blockcnt * dev->blocklen;
+	total_data_clusters = spdk_bs_total_data_cluster_count(bs);
+	/* Pretend the blobstore ran out of clusters before it was grown. */
+	bs->out_of_clusters_warned = true;
 	spdk_bs_grow_live(bs, bs_op_complete, NULL);
 	poll_threads();
 	CU_ASSERT(g_bserrno == 0);
+	/* Newly added clusters must re-arm the out-of-space warning. */
+	if (spdk_bs_total_data_cluster_count(bs) > total_data_clusters) {
+		CU_ASSERT(bs->out_of_clusters_warned == false);
+	}
 	total_data_clusters = spdk_bs_total_data_cluster_count(bs);
 
 	/* Make sure the super block is updated. */

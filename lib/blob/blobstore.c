@@ -11946,6 +11946,7 @@ bs_grow_live_super_write_cpl(spdk_bs_sequence_t *seq, void *cb_arg, int bserrno)
 
 	bs->num_free_clusters = spdk_bit_pool_count_free(bs->used_clusters);
 	assert(ctx->bs->num_free_clusters <= ctx->bs->total_clusters);
+	bs->out_of_clusters_warned = false;
 	spdk_spin_unlock(&bs->used_lock);
 
 	bs_grow_live_done(ctx, 0);
