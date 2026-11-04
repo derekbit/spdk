@@ -1059,6 +1059,7 @@ spdk_lvs_destroy(struct spdk_lvol_store *lvs, spdk_lvs_op_complete cb_fn,
 	}
 
 	TAILQ_FOREACH_SAFE(iter_lvol, &lvs->lvols, link, tmp) {
+		spdk_lvs_esnap_missing_remove(iter_lvol);
 		lvol_free(iter_lvol);
 	}
 
@@ -1158,6 +1159,8 @@ lvol_create_open_cb(void *cb_arg, struct spdk_blob *blob, int lvolerrno)
 	TAILQ_REMOVE(&req->lvol->lvol_store->pending_lvols, req->lvol, link);
 
 	if (lvolerrno < 0) {
+		/* The lvol may already be on a degraded set, see lvol_create_cb(). */
+		spdk_lvs_esnap_missing_remove(lvol);
 		lvol_free(lvol);
 		lvol_free_xattrs_list(req->xattrs_external);
 		lvol_free_xattrs_list(req->xattr_names);

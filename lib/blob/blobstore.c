@@ -7046,6 +7046,15 @@ bs_clone_snapshot_newblob_cleanup(struct spdk_clone_snapshot_ctx *ctx, int bserr
 {
 	struct spdk_blob *newblob = ctx->new.blob;
 
+	/*
+	 * bs_snapshot_freeze_done() shares the original blob's back_bs_dev with the new blob. The
+	 * original blob still owns it unless it was replaced, so closing the new blob must not
+	 * destroy it.
+	 */
+	if (newblob->back_bs_dev != NULL && newblob->back_bs_dev == ctx->original.blob->back_bs_dev) {
+		newblob->back_bs_dev = NULL;
+	}
+
 	if (bserrno != 0) {
 		if (ctx->bserrno != 0) {
 			SPDK_ERRLOG("Cleanup error %d\n", bserrno);
